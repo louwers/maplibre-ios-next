@@ -168,6 +168,12 @@ void MLNMapViewImpl::drainFrameResults() {
   if (session == MLN_HANDLE_NULL) {
     return;
   }
+  // A surface session may make the layer opaque when it configures it (wgpu
+  // does), which turns the transparent pixels of a style without a background
+  // black. The drawables keep their alpha, so the view's own opacity applies.
+  if (metalView.layer.opaque != opaque) {
+    metalView.layer.opaque = opaque;
+  }
   mln_render_frame_batch batch = MLN_HANDLE_NULL;
   mln_render_frame_batch_view view = {sizeof(mln_render_frame_batch_view)};
   mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
