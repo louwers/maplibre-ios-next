@@ -1,0 +1,10 @@
+.DS_Store
+/.build/
+/.swiftpm/
+/.upstream/
+/Package.resolved
+xcuserdata/
+DerivedData/
+node_modules/
+/Parity/build/
+/Parity/out/

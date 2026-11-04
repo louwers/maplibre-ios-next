@@ -1,0 +1,14 @@
+{
+  "name": "maplibre-ios-next-style-code",
+  "private": true,
+  "type": "module",
+  "description": "Generates the style layer and light classes from the style specification.",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "dependencies": {
+    "csscolorparser": "^1.0.3",
+    "ejs": "^5.0.1",
+    "lodash": "^4.17.23"
+  }
+}
