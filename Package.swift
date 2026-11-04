@@ -48,8 +48,9 @@ let package = Package(
         .define("MLN_NEXT", to: "1"),
         .define("MLN_NEXT_API_VERSION", to: "\"7.0.0\""),
         .define("MLN_RENDER_BACKEND_METAL", to: "1"),
-        // Classic's release binaries have assertions compiled out.
-        .define("NS_BLOCK_ASSERTIONS", to: "1", .when(configuration: .release)),
+        // Classic ships release binaries, so its assertions never run in an
+        // app; this source package builds in the app's configuration.
+        .define("NS_BLOCK_ASSERTIONS", to: "1"),
       ],
       cxxSettings: [
         .headerSearchPath("include/MapLibre"),
@@ -63,8 +64,9 @@ let package = Package(
         .define("MLN_NEXT", to: "1"),
         .define("MLN_NEXT_API_VERSION", to: "\"7.0.0\""),
         .define("MLN_RENDER_BACKEND_METAL", to: "1"),
-        // Classic's release binaries have assertions compiled out.
-        .define("NS_BLOCK_ASSERTIONS", to: "1", .when(configuration: .release)),
+        // Classic ships release binaries, so its assertions never run in an
+        // app; this source package builds in the app's configuration.
+        .define("NS_BLOCK_ASSERTIONS", to: "1"),
       ],
       linkerSettings: [
         .linkedFramework("CoreLocation"),
