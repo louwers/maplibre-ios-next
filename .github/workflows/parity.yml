@@ -1,0 +1,45 @@
+name: Parity
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      render_list:
+        description: Render tests to run ("all" for every upstream render test)
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: API surface
+        run: Parity/run.sh api
+      - name: Behaviour and render tests
+        env:
+          PARITY_RENDER_LIST: ${{ inputs.render_list }}
+        run: Parity/run.sh behaviour --impl both && Parity/run.sh render --impl both
+      - name: Summary
+        if: always()
+        run: cat Parity/out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-report
+          path: |
+            Parity/out/report.md
+            Parity/out/report.html
+            Parity/out/report.json
+            Parity/out/api-diff.json
+            Parity/out/*/status.json
+            Parity/out/*/coverage.json
+            Parity/out/*/traces
+            Parity/out/*/build-errors.txt
+            Parity/out/render-diff

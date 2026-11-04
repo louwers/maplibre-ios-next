@@ -41,7 +41,18 @@ const MLNExceptionName MLNBundleNotFoundException = @"MLNBundleNotFoundException
 
 + (nullable NSDictionary<NSString *, id> *)mgl_frameworkInfoDictionary {
   NSBundle *bundle = self.mgl_frameworkBundle;
+#ifdef SWIFTPM_MODULE_BUNDLE
+  // A SwiftPM resource bundle carries no version; report the MapLibre iOS
+  // version whose API this package implements, as the framework's
+  // Info.plist did.
+  NSMutableDictionary *info = [bundle.infoDictionary mutableCopy] ?: [NSMutableDictionary dictionary];
+  if (![info[@"CFBundleShortVersionString"] length]) {
+    info[@"CFBundleShortVersionString"] = @MLN_NEXT_API_VERSION;
+  }
+  return info;
+#else
   return bundle.infoDictionary;
+#endif
 }
 
 + (nullable NSString *)mgl_applicationBundleIdentifier {

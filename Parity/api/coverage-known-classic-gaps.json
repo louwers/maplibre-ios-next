@@ -1,0 +1,11 @@
+{
+  "comment": "Public API that classic MapLibre iOS 7.0.0 itself does not provide at runtime, found by running the coverage test against classic. The coverage test reports these but does not fail on them for either implementation.",
+  "gaps": [
+    {"id": "protocol MLNComputedShapeSourceDataSource MLNComputedShapeSourceDataSource", "reason": "No class in the framework adopts it and it is never referenced with @protocol(), so no protocol metadata is emitted."},
+    {"id": "protocol MLNMapSnapshotterDelegate MLNMapSnapshotterDelegate", "reason": "No protocol metadata is emitted (see above)."},
+    {"id": "protocol MLNMapViewDelegate MLNMapViewDelegate", "reason": "No protocol metadata is emitted (see above)."},
+    {"id": "protocol MLNNetworkConfigurationDelegate MLNNetworkConfigurationDelegate", "reason": "No protocol metadata is emitted (see above)."},
+    {"id": "protocol MLNOfflineStorageDelegate MLNOfflineStorageDelegate", "reason": "No protocol metadata is emitted (see above)."},
+    {"id": "symbol MLNEffectiveScaleFactorForView", "reason": "Declared in MLNDisplayUtils.h without MLN_EXPORT, so the symbol is hidden in MapLibre.framework."}
+  ]
+}

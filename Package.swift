@@ -41,6 +41,7 @@ let package = Package(
         .headerSearchPath("vendor/SMCalloutView"),
         .headerSearchPath("vendor/polylabel"),
         .define("MLN_NEXT", to: "1"),
+        .define("MLN_NEXT_API_VERSION", to: "\"7.0.0\""),
         .define("MLN_RENDER_BACKEND_METAL", to: "1"),
       ],
       cxxSettings: [
@@ -53,6 +54,7 @@ let package = Package(
         .headerSearchPath("vendor/SMCalloutView"),
         .headerSearchPath("vendor/polylabel"),
         .define("MLN_NEXT", to: "1"),
+        .define("MLN_NEXT_API_VERSION", to: "\"7.0.0\""),
         .define("MLN_RENDER_BACKEND_METAL", to: "1"),
       ],
       linkerSettings: [

@@ -1,0 +1,11 @@
+# Render tests also rendered by an on-screen MLNMapView (a subset of curated.txt).
+background-color/colorSpace-hcl
+circle-pitch-scale/map
+empty/empty
+fill-extrusion-translate/default
+filter/global-state
+hillshade-alt/basic-0
+line-blur/default
+line-offset/default
+raster-alpha/default
+raster-rotation/180

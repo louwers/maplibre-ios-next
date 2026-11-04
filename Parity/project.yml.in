@@ -1,0 +1,75 @@
+# XcodeGen template for one parity project. make-projects.sh fills in the
+# MapLibre package for each implementation.
+name: Parity
+options:
+  bundleIdPrefix: org.maplibre.parity.@IMPL@
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    CLANG_ENABLE_MODULES: YES
+    CLANG_ENABLE_OBJC_ARC: YES
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    OTHER_CPLUSPLUSFLAGS: ["$(inherited)", "-fcxx-modules"]
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
+    GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "PARITY_IMPL_@IMPL_MACRO@=1"]
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "PARITY_IMPL_@IMPL_MACRO@"]
+packages:
+@MAPLIBRE_PACKAGE@
+targets:
+  ParityHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../HostApp
+    dependencies:
+      - package: MapLibre
+    info:
+      path: ParityHost-Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        NSLocationWhenInUseUsageDescription: Parity tests
+        MLNParityImplementation: "@IMPL@"
+  ParityTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../../Tests/Support
+      - path: ../../Tests/Coverage
+      - path: ../../Tests/Upstream
+      - path: ../../Tests/Trace
+      - path: ../../Tests/Render
+      - path: ../../Fixtures
+        type: folder
+        buildPhase: resources
+      # Upstream test resources, downloaded by make-projects.sh.
+      - path: UpstreamResources
+        buildPhase: resources
+    dependencies:
+      - target: ParityHost
+      # The host app links MapLibre; tests use the host's copy.
+      - package: MapLibre
+        link: false
+    settings:
+      base:
+        SWIFT_OBJC_BRIDGING_HEADER: ../../Tests/Support/ParityTests-Bridging-Header.h
+        OTHER_LDFLAGS: ["$(inherited)", "-ObjC"]
+    info:
+      path: ParityTests-Info.plist
+schemes:
+  Parity:
+    build:
+      targets:
+        ParityHost: all
+        ParityTests: [test]
+    test:
+      config: Debug
+      targets:
+        - ParityTests
+      gatherCoverageData: false

@@ -8,3 +8,4 @@ DerivedData/
 node_modules/
 /Parity/build/
 /Parity/out/
+__pycache__/

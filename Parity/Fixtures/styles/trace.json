@@ -1,0 +1,49 @@
+{
+  "version": 8,
+  "name": "Parity trace style",
+  "center": [4.9, 52.37],
+  "zoom": 3,
+  "sources": {
+    "points": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {"type": "Feature", "id": 1, "properties": {"name": "Amsterdam", "rank": 1, "kind": "city"}, "geometry": {"type": "Point", "coordinates": [4.9, 52.37]}},
+          {"type": "Feature", "id": 2, "properties": {"name": "Utrecht", "rank": 2, "kind": "city"}, "geometry": {"type": "Point", "coordinates": [5.12, 52.09]}},
+          {"type": "Feature", "id": "rotterdam", "properties": {"name": "Rotterdam", "rank": 2.5, "kind": "port", "open": true}, "geometry": {"type": "Point", "coordinates": [4.48, 51.92]}}
+        ]
+      }
+    },
+    "shapes": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {"type": "Feature", "id": 10, "properties": {"kind": "road"}, "geometry": {"type": "LineString", "coordinates": [[4.0, 52.0], [5.0, 52.5], [6.0, 52.0]]}},
+          {"type": "Feature", "id": 11, "properties": {"kind": "park", "area": 12.5}, "geometry": {"type": "Polygon", "coordinates": [[[4.5, 52.2], [5.3, 52.2], [5.3, 52.6], [4.5, 52.6], [4.5, 52.2]]]}}
+        ]
+      }
+    },
+    "clustered": {
+      "type": "geojson",
+      "cluster": true,
+      "clusterRadius": 50,
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {"type": "Feature", "properties": {"n": 1}, "geometry": {"type": "Point", "coordinates": [10.0, 50.0]}},
+          {"type": "Feature", "properties": {"n": 2}, "geometry": {"type": "Point", "coordinates": [10.01, 50.01]}},
+          {"type": "Feature", "properties": {"n": 3}, "geometry": {"type": "Point", "coordinates": [10.02, 50.02]}}
+        ]
+      }
+    }
+  },
+  "layers": [
+    {"id": "background", "type": "background", "paint": {"background-color": "#d8f2ff"}},
+    {"id": "park", "type": "fill", "source": "shapes", "filter": ["==", ["geometry-type"], "Polygon"], "paint": {"fill-color": "#9ad29a", "fill-opacity": 0.8}},
+    {"id": "road", "type": "line", "source": "shapes", "filter": ["==", ["geometry-type"], "LineString"], "layout": {"line-join": "round", "line-cap": "round"}, "paint": {"line-color": "#c33", "line-width": ["interpolate", ["linear"], ["zoom"], 2, 1, 10, 6]}},
+    {"id": "cities", "type": "circle", "source": "points", "paint": {"circle-radius": 8, "circle-color": ["match", ["get", "kind"], "port", "#00f", "#f80"]}},
+    {"id": "clusters", "type": "circle", "source": "clustered", "paint": {"circle-radius": 12, "circle-color": "#555"}}
+  ]
+}
