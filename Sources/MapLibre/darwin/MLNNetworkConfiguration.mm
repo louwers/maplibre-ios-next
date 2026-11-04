@@ -142,7 +142,8 @@ NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
   mln_http_header_rule rule = {sizeof(mln_http_header_rule)};
   rule.kinds = MLN_RESOURCE_KIND_FLAG_ALL;
   rule.flags = MLN_URL_MATCH_GLOB;
-  rule.url = MLNFFIBufferView(@"*");
+  // `*` stops at a slash; `**` matches every URL.
+  rule.url = MLNFFIBufferView(@"**");
   rule.headers = cHeaders.data();
   rule.header_count = cHeaders.size();
   mln_http_header_transform transform = {sizeof(mln_http_header_transform)};
