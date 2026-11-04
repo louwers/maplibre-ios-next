@@ -5,6 +5,16 @@
 
 import PackageDescription
 
+// MLN_LOCAL_FFI=1 builds against a C API built from a maplibre-native-ffi
+// checkout by scripts/build-local-ffi.sh instead of the published package.
+let ffi: Package.Dependency =
+  Context.environment["MLN_LOCAL_FFI"] != nil
+  ? .package(path: ".local-ffi/maplibre-native-next-ffi-distribution")
+  : .package(
+    url: "https://github.com/louwers/maplibre-native-next-ffi-distribution",
+    exact: "0.0.6"
+  )
+
 let package = Package(
   name: "MapLibreNext",
   defaultLocalization: "en",
@@ -12,17 +22,12 @@ let package = Package(
   products: [
     .library(name: "MapLibre", targets: ["MapLibre"]),
   ],
-  dependencies: [
-    .package(
-      url: "https://github.com/maplibre/maplibre-native-ffi-distribution",
-      exact: "0.202610.3"
-    ),
-  ],
+  dependencies: [ffi],
   targets: [
     .target(
       name: "MapLibre",
       dependencies: [
-        .product(name: "MaplibreNativeC", package: "maplibre-native-ffi-distribution"),
+        .product(name: "MaplibreNativeC", package: "maplibre-native-next-ffi-distribution"),
       ],
       path: "Sources/MapLibre",
       resources: [

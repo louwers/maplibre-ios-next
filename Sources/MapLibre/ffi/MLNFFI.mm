@@ -95,8 +95,6 @@ NSString *MLNFFIStatusDescription(mln_status status) {
       return @"busy";
     case MLN_STATUS_TARGET_LOST:
       return @"target lost";
-    case MLN_STATUS_NOT_READY:
-      return @"not ready";
     case MLN_STATUS_NOT_FOUND:
       return @"not found";
   }
@@ -142,6 +140,32 @@ static void MLNFFIReleaseCall(void *userData) { CFBridgingRelease(userData); }
 
 // Submits and blocks. The call object stays alive on this stack frame, so the
 // C API borrows it without a release callback.
+// A C API build may leave functions unimplemented: maplibre-native-next's
+// returns MLN_STATUS_UNSUPPORTED from the call. MapLibre iOS has no such error,
+// so the call does nothing, as if it succeeded without a result, and the first
+// one of each function is logged.
+static BOOL MLNFFIIgnoreUnsupported(mln_status status, const char *diagnostic) {
+  if (status != MLN_STATUS_UNSUPPORTED) {
+    return NO;
+  }
+  static NSMutableSet<NSString *> *logged;
+  static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+  NSString *message = @(diagnostic);
+  os_unfair_lock_lock(&lock);
+  if (!logged) {
+    logged = [NSMutableSet set];
+  }
+  BOOL first = ![logged containsObject:message];
+  [logged addObject:message];
+  os_unfair_lock_unlock(&lock);
+  if (first) {
+    MLNLogWarning(@"This build of MapLibre Native does not support a call that MapLibre iOS made: "
+                  @"%@",
+                  message);
+  }
+  return YES;
+}
+
 static mln_status MLNFFICallBlocking(MLNFFISubmit submit, MLNFFIConsume consume,
                                      NSString **message) {
   MLNFFICall *call = [MLNFFICall new];
@@ -152,6 +176,9 @@ static mln_status MLNFFICallBlocking(MLNFFISubmit submit, MLNFFIConsume consume,
   mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
   diagnostic.message[0] = '\0';
   mln_status status = submit(&completion, &diagnostic);
+  if (MLNFFIIgnoreUnsupported(status, diagnostic.message)) {
+    return MLN_STATUS_OK;
+  }
   if (status != MLN_STATUS_OK) {
     if (message) {
       *message = @(diagnostic.message);
@@ -176,7 +203,12 @@ static void MLNFFICallAsync(MLNFFISubmit submit, MLNFFIConsume consume,
   mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
   diagnostic.message[0] = '\0';
   mln_status status = submit(&completion, &diagnostic);
-  if (status != MLN_STATUS_OK) {
+  BOOL unsupported = MLNFFIIgnoreUnsupported(status, diagnostic.message);
+  if (unsupported) {
+    status = MLN_STATUS_OK;
+    diagnostic.message[0] = '\0';
+  }
+  if (status != MLN_STATUS_OK || unsupported) {
     CFBridgingRelease(userData);
     if (completionBlock) {
       NSString *message = @(diagnostic.message);

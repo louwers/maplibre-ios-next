@@ -9,3 +9,4 @@ node_modules/
 /Parity/build/
 /Parity/out/
 __pycache__/
+.local-ffi/

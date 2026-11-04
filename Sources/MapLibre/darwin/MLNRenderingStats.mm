@@ -31,8 +31,8 @@
 @implementation MLNRenderingStats
 
 - (void)mgl_setFFIStats:(mln_rendering_stats)stats {
-  _encodingTime = stats.encoding_time;
-  _renderingTime = stats.rendering_time;
+  _encodingTime = stats.encoding_time_ms / 1000.0;
+  _renderingTime = stats.rendering_time_ms / 1000.0;
   _numFrames = static_cast<int>(stats.frame_count);
   _numDrawCalls = static_cast<int>(stats.draw_call_count);
   _totalDrawCalls = static_cast<int>(stats.total_draw_call_count);

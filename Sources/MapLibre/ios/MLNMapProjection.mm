@@ -38,8 +38,20 @@
 }
 
 - (mln_camera_options)mgl_camera {
+  mln_map_projection_camera_result result = {sizeof(mln_map_projection_camera_result)};
+  mln_map_projection_get_camera(_projection, &result, NULL);
   mln_camera_options camera = {sizeof(mln_camera_options)};
-  mln_map_projection_get_camera(_projection, &camera, NULL);
+  camera.fields = MLN_CAMERA_OPTION_CENTER | MLN_CAMERA_OPTION_CENTER_ALTITUDE |
+                  MLN_CAMERA_OPTION_PADDING | MLN_CAMERA_OPTION_ZOOM | MLN_CAMERA_OPTION_BEARING |
+                  MLN_CAMERA_OPTION_PITCH | MLN_CAMERA_OPTION_ROLL | MLN_CAMERA_OPTION_FOV;
+  camera.center = result.camera.center;
+  camera.center_altitude = result.camera.center_altitude;
+  camera.padding = result.camera.padding;
+  camera.zoom = result.camera.zoom;
+  camera.bearing = result.camera.bearing;
+  camera.pitch = result.camera.pitch;
+  camera.roll = result.camera.roll;
+  camera.field_of_view = result.camera.field_of_view;
   return camera;
 }
 

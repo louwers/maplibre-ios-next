@@ -250,7 +250,7 @@ void Map::updateCamera(mln_camera_update_mode mode, const CameraOptions &camera,
   update.gesture_phase = nextGesturePhase();
   [map perform:@"cancel camera transitions"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-          return mln_map_cancel_transitions(h, completion, diagnostic);
+          return mln_map_cancel_camera_transitions(h, completion, diagnostic);
         }];
   [map perform:@"update the camera"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
@@ -279,7 +279,7 @@ void Map::moveBy(const ScreenCoordinate &offset, const AnimationOptions &animati
   delta.gesture_phase = nextGesturePhase();
   [map perform:@"cancel camera transitions"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-          return mln_map_cancel_transitions(h, completion, diagnostic);
+          return mln_map_cancel_camera_transitions(h, completion, diagnostic);
         }];
   [map perform:@"move the camera"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
@@ -291,7 +291,7 @@ void Map::cancelTransitions() {
   mln_map h = handle();
   [map perform:@"cancel camera transitions"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-          return mln_map_cancel_transitions(h, completion, diagnostic);
+          return mln_map_cancel_camera_transitions(h, completion, diagnostic);
         }];
 }
 
@@ -407,20 +407,24 @@ CameraOptions Map::cameraForGeometry(id geometry, const EdgeInsets &padding,
   return cameraForLatLngs(points, padding, bearing, pitch);
 }
 
+// Map::latLngBoundsForCamera() hulled the top-left and bottom-right corners of
+// the view with wrapped longitudes. mln_map_lat_lng_bounds_for_camera() hulls
+// every corner with unwrapped ones, so the corners are projected here.
 LatLngBounds Map::latLngBoundsForCamera(const CameraOptions &camera) const {
-  mln_map h = handle();
+  mln_map_snapshot state = snapshot();
   mln_camera_options options = cameraToC(camera);
-  __block mln_lat_lng_bounds bounds = {};
-  [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-    return mln_map_lat_lng_bounds_for_camera(h, &options, completion, diagnostic);
+  mln_map_projection projection = MLN_HANDLE_NULL;
+  mln_lat_lng northwest = {};
+  mln_lat_lng southeast = {};
+  if (mln_map_projection_create(&state.view, &projection, nullptr) == MLN_STATUS_OK) {
+    mln_map_projection_set_camera(projection, &options, nullptr);
+    mln_map_projection_lat_lng_for_pixel(projection, {0, 0}, &northwest, nullptr);
+    mln_map_projection_lat_lng_for_pixel(
+        projection, {(double)state.view.extent.width, (double)state.view.extent.height}, &southeast,
+        nullptr);
+    mln_map_projection_release(projection);
   }
-      consume:^(const mln_completion_result *result) {
-        if (result->value) {
-          bounds = *(const mln_lat_lng_bounds *)result->value;
-        }
-      }
-      message:nil];
-  return LatLngBounds::hull(latLngFromC(bounds.southwest), latLngFromC(bounds.northeast));
+  return LatLngBounds::hull(latLngFromC(northwest), latLngFromC(southeast));
 }
 
 void Map::setBounds(const BoundOptions &bounds) {
@@ -453,9 +457,9 @@ void Map::setBounds(const BoundOptions &bounds) {
 }
 
 BoundOptions Map::getBounds() const {
-  mln_bound_options bounds = snapshot().bounds;
+  mln_camera_bounds bounds = snapshot().bounds;
   BoundOptions options;
-  if (bounds.fields & MLN_BOUND_OPTION_UNBOUNDED || !(bounds.fields & MLN_BOUND_OPTION_BOUNDS)) {
+  if (bounds.unbounded) {
     options.bounds = LatLngBounds::world();
   } else {
     options.bounds =
@@ -493,7 +497,7 @@ LatLng Map::latLngForPixel(const ScreenCoordinate &pixel) const {
 // MARK: Size and options
 
 void Map::setSize(Size size) {
-  mln_logical_extent extent = {size.width, size.height, map.scaleFactor};
+  mln_logical_size extent = {size.width, size.height};
   mln_map h = handle();
   mln_render_session session = renderSession;
   if (session != MLN_HANDLE_NULL) {
@@ -551,11 +555,11 @@ void Map::setDebug(MapDebugOptions debug) {
   mln_map h = handle();
   [map perform:@"set debug options"
         submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-          return mln_map_set_debug_options(h, (mln_map_debug_flags)debug, completion, diagnostic);
+          return mln_map_set_debug_flags(h, (mln_map_debug_flags)debug, completion, diagnostic);
         }];
 }
 
-MapDebugOptions Map::getDebug() const { return MapDebugOptions(snapshot().debug_options); }
+MapDebugOptions Map::getDebug() const { return MapDebugOptions(snapshot().debug_flags); }
 
 void Map::setTileOptions(mln_map_tile_options tile) {
   mln_map h = handle();

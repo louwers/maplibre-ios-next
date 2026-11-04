@@ -260,23 +260,22 @@ typedef NS_ENUM(NSUInteger, MLNSnapshotStyleState) {
   MLNSnapshotStyleStateFailed,
 };
 
-/// One graphics device for all snapshotters, which the C API allows to share.
-static mln_graphics_device MLNSnapshotterGraphicsDevice(void) {
-  static mln_graphics_device device = MLN_HANDLE_NULL;
+/// One offscreen device for all snapshotters, which the C API allows to share.
+static mln_offscreen_device MLNSnapshotterOffscreenDevice(void) {
+  static mln_offscreen_device device = MLN_HANDLE_NULL;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
-    mln_graphics_device_options options = {sizeof(mln_graphics_device_options)};
-    if (mln_graphics_device_create(&options, &device, &diagnostic) != MLN_STATUS_OK) {
-      MLNLogError(@"Failed to create a graphics device for snapshots: %s", diagnostic.message);
+    if (mln_offscreen_device_create(NULL, &device, &diagnostic) != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to create an offscreen device for snapshots: %s", diagnostic.message);
     }
   });
   return device;
 }
 
 // Classic wrapped mbgl::MapSnapshotter, a static map with a headless renderer.
-// Here each start creates a static C API map with a texture session on a
-// graphics device, as mbgl::MapSnapshotter was created anew for each start, and
+// Here each start creates a static C API map with an offscreen session on a
+// shared device, as mbgl::MapSnapshotter was created anew for each start, and
 // renders it with mln_map_request_still_image().
 @implementation MLNMapSnapshotter {
   MLNFFIMap *_map;
@@ -1142,19 +1141,18 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
   _map.eventObserver = self;
   _style = [[MLNStyle alloc] initWithMap:_map stylable:self];
 
-  mln_graphics_device_texture_descriptor descriptor = {
-      sizeof(mln_graphics_device_texture_descriptor)};
-  descriptor.extent = {(uint32_t)size.width, (uint32_t)size.height, pixelRatio};
+  mln_offscreen_descriptor descriptor = {sizeof(mln_offscreen_descriptor)};
+  descriptor.logical_size = {(uint32_t)size.width, (uint32_t)size.height};
   mln_render_session_attach_options attachOptions = {sizeof(mln_render_session_attach_options)};
   attachOptions.driver = MLN_RENDER_DRIVER_CORE_WORKER;
   mln_map handle = _map.handle;
-  mln_graphics_device device = MLNSnapshotterGraphicsDevice();
+  mln_offscreen_device device = MLNSnapshotterOffscreenDevice();
   __block mln_render_session session = MLN_HANDLE_NULL;
   __block mln_render_session *outSession = &session;
   NSString *message;
   if ([_map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-        return mln_map_attach_graphics_device_texture(handle, device, &descriptor, &attachOptions,
-                                                      outSession, completion, diagnostic);
+        return mln_map_attach_offscreen(handle, &descriptor, &attachOptions, device, outSession,
+                                        completion, diagnostic);
       }
           consume:nil
           message:&message] != MLN_STATUS_OK) {
