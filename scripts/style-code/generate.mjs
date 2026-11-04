@@ -867,6 +867,73 @@ global.mbglType = function(property) {
     }
 };
 
+// The MLNStyleValueType of a property, for the C API descriptor tables.
+global.descriptorValueType = function (property) {
+    const t = 'MLNStyleValueType';
+    switch (property.type) {
+        case 'boolean': return `${t}Boolean`;
+        case 'number': return `${t}Number`;
+        case 'string': return `${t}String`;
+        case 'formatted': return `${t}Formatted`;
+        case 'resolvedImage': return `${t}ResolvedImage`;
+        case 'enum': return `${t}Enum`;
+        case 'color': return property['property-type'] === 'color-ramp' ? `${t}ColorRamp` : `${t}Color`;
+        case 'numberArray': return `${t}NumberArray`;
+        case 'colorArray': return `${t}ColorArray`;
+        case 'padding': return `${t}Padding`;
+        case 'variableAnchorOffsetCollection': return `${t}VariableAnchorOffsetCollection`;
+        case 'array':
+            switch (arrayType(property)) {
+                case 'dasharray': return `${t}NumberArray`;
+                case 'font': return `${t}StringArray`;
+                case 'padding': return `${t}PaddingArray`;
+                case 'position': return `${t}Position`;
+                case 'offset':
+                case 'translate': return `${t}Offset`;
+                case 'anchor':
+                case 'mode': return `${t}EnumArray`;
+            }
+    }
+    throw new Error(`unknown type for ${property.name}`);
+};
+
+// The spec default as a C string literal of JSON, or NULL.
+global.descriptorDefault = function (property) {
+    if (property.default === undefined) {
+        return 'NULL';
+    }
+    return JSON.stringify(JSON.stringify(property.default));
+};
+
+// [Objective-C enum constant, style-spec value] pairs for enum-valued properties.
+global.descriptorEnumValues = function (property) {
+    let enumType, values;
+    if (property.type === 'enum') {
+        enumType = property['light-property'] ? 'MLNLightAnchor' : `MLN${camelize(enumName(property))}`;
+        values = Object.keys(property.values);
+    } else if (property.type === 'variableAnchorOffsetCollection') {
+        enumType = 'MLNTextAnchor';
+        values = ['center', 'left', 'right', 'top', 'bottom', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+    } else if (arrayType(property) === 'anchor') {
+        enumType = 'MLNTextAnchor';
+        values = Object.keys(property.values);
+    } else if (arrayType(property) === 'mode') {
+        enumType = 'MLNTextWritingMode';
+        values = Object.keys(property.values);
+    } else {
+        return [];
+    }
+    return values.map(value => [`${enumType}${camelize(value)}`, value]);
+};
+
+global.hasEnumValues = function (property) {
+    return descriptorEnumValues(property).length > 0;
+};
+
+global.expressionOperators = function () {
+    return Object.keys(spec.expression_name.values);
+};
+
 global.initLayer = function (layerType) {
     if (layerType == "background") {
        return `_layer = new mln::style::${camelize(layerType)}Layer(identifier.UTF8String);`
