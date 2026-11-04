@@ -1,15 +1,16 @@
+// Based on platform/darwin/src/MLNComputedShapeSource.mm at ios-v7.0.0
+
 #import "MLNComputedShapeSource_Private.h"
 
+#import "MLNFFI.h"
+#import "MLNGeoJSON.h"
 #import "MLNGeometry_Private.h"
-#import "MLNMapView_Private.h"
+#import "MLNLoggingConfiguration_Private.h"
 #import "MLNShapeCollection.h"
-#import "MLNShape_Private.h"
 #import "MLNSource_Private.h"
 
-#include <mln/map/map.hpp>
-#include <mln/style/sources/custom_geometry_source.hpp>
-#include <mln/tile/tile_id.hpp>
-#include <mln/util/geojson.hpp>
+#include <atomic>
+#include <cmath>
 
 const MLNExceptionName MLNInvalidDatasourceException = @"MLNInvalidDatasourceException";
 
@@ -18,16 +19,17 @@ const MLNShapeSourceOption MLNShapeSourceOptionWrapsCoordinates =
 const MLNShapeSourceOption MLNShapeSourceOptionClipsCoordinates =
     @"MLNShapeSourceOptionClipsCoordinates";
 
-mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDictionary(
+mln_custom_geometry_source_options MLNCustomGeometrySourceOptionsFromDictionary(
     NSDictionary<MLNShapeSourceOption, id> *options) {
-  mln::style::CustomGeometrySource::Options sourceOptions;
+  mln_custom_geometry_source_options sourceOptions = {sizeof(mln_custom_geometry_source_options)};
 
   if (NSNumber *value = options[MLNShapeSourceOptionMinimumZoomLevel]) {
     if (![value isKindOfClass:[NSNumber class]]) {
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionMinimumZoomLevel must be an NSNumber."];
     }
-    sourceOptions.zoomRange.min = value.integerValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_MIN_ZOOM;
+    sourceOptions.min_zoom = (uint8_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionMaximumZoomLevel]) {
@@ -35,7 +37,8 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionMaximumZoomLevel must be an NSNumber."];
     }
-    sourceOptions.zoomRange.max = value.integerValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_MAX_ZOOM;
+    sourceOptions.max_zoom = (uint8_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionBuffer]) {
@@ -43,7 +46,8 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionBuffer must be an NSNumber."];
     }
-    sourceOptions.tileOptions.buffer = value.integerValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_BUFFER;
+    sourceOptions.buffer = (uint16_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionSimplificationTolerance]) {
@@ -51,7 +55,8 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionSimplificationTolerance must be an NSNumber."];
     }
-    sourceOptions.tileOptions.tolerance = value.doubleValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_TOLERANCE;
+    sourceOptions.tolerance = value.doubleValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionWrapsCoordinates]) {
@@ -59,7 +64,8 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionWrapsCoordinates must be an NSNumber."];
     }
-    sourceOptions.tileOptions.wrap = value.boolValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_WRAP;
+    sourceOptions.wrap = value.boolValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionClipsCoordinates]) {
@@ -67,14 +73,63 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionClipsCoordinates must be an NSNumber."];
     }
-    sourceOptions.tileOptions.clip = value.boolValue;
+    sourceOptions.fields |= MLN_CUSTOM_GEOMETRY_SOURCE_OPTION_CLIP;
+    sourceOptions.clip = value.boolValue;
   }
 
   return sourceOptions;
 }
 
+/// The GeoJSON text of a feature collection with the given features, as the
+/// mln::FeatureCollection classic passed to setTileData.
+static NSString *MLNFeatureCollectionJSON(NSArray<MLNShape<MLNFeature> *> *features) {
+  NSMutableArray *geoJSONFeatures = [NSMutableArray arrayWithCapacity:features.count];
+  for (MLNShape<MLNFeature> *feature in features) {
+    if ([feature isMemberOfClass:[MLNShapeCollection class]]) {
+      static dispatch_once_t onceToken;
+      dispatch_once(&onceToken, ^{
+        NSLog(@"MLNShapeCollection initialized with MLNFeatures will not retain attributes."
+              @"Use MLNShapeCollectionFeature to retain attributes instead."
+              @"This will be logged only once.");
+      });
+    }
+    [geoJSONFeatures addObject:MLNGeoJSONObjectFromShape(feature)];
+  }
+  return MLNFFIJSONStringFromObject(@{@"type" : @"FeatureCollection", @"features" : geoJSONFeatures});
+}
+
+/// mln::LatLngBounds(const CanonicalTileID &)
+static MLNCoordinateBounds MLNCoordinateBoundsForTile(uint8_t z, uint32_t x, uint32_t y) {
+  auto latitude = [](double z2, uint32_t row) {
+    const double n = M_PI - 2.0 * M_PI * row / z2;
+    return 180.0 / M_PI * std::atan(0.5 * (std::exp(n) - std::exp(-n)));
+  };
+  auto longitude = [](double z2, uint32_t column) { return column / z2 * 360.0 - 180.0; };
+  const double z2 = std::pow(2.0, z);
+  CLLocationCoordinate2D sw = CLLocationCoordinate2DMake(latitude(z2, y + 1), longitude(z2, x));
+  CLLocationCoordinate2D ne = CLLocationCoordinate2DMake(latitude(z2, y), longitude(z2, x + 1));
+  return MLNCoordinateBoundsMake(sw, ne);
+}
+
+@class MLNComputedShapeSource;
+
+/// The state the C API's fetch and cancel callbacks use, which run on native
+/// worker threads. Classic captured the source in the core's fetch functions.
+@interface MLNComputedShapeSourceCallbacks : NSObject {
+ @public
+  std::atomic<uint64_t> map;
+}
+@property (nonatomic, weak) MLNComputedShapeSource *source;
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic) NSOperationQueue *requestQueue;
+@end
+
+@implementation MLNComputedShapeSourceCallbacks
+@end
+
 @interface MLNComputedShapeSource () {
-  std::unique_ptr<mln::style::CustomGeometrySource> _pendingSource;
+  mln_custom_geometry_source_options _sourceOptions;
+  MLNComputedShapeSourceCallbacks *_callbacks;
 }
 
 @property (nonatomic, readwrite) NSDictionary *options;
@@ -91,27 +146,30 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
 @property (nonatomic, assign) BOOL dataSourceImplementsFeaturesForTile;
 @property (nonatomic, assign) BOOL dataSourceImplementsFeaturesForBounds;
 @property (nonatomic, weak, nullable) id<MLNComputedShapeSourceDataSource> dataSource;
-@property (nonatomic, nullable) mln::style::CustomGeometrySource *rawSource;
+@property (nonatomic, copy) NSString *sourceIdentifier;
+/// The map to send the tile to; cleared when the operation is cancelled.
+@property (atomic) uint64_t map;
 
 - (instancetype)initForSource:(MLNComputedShapeSource *)source
-                         tile:(const mln::CanonicalTileID &)tileId;
+                         tile:(mln_canonical_tile_id)tileID
+                          map:(mln_map)map;
 
 @end
 
 @implementation MLNComputedShapeSourceFetchOperation
 
 - (instancetype)initForSource:(MLNComputedShapeSource *)source
-                         tile:(const mln::CanonicalTileID &)tileID {
+                         tile:(mln_canonical_tile_id)tileID
+                          map:(mln_map)map {
   self = [super init];
-  _z = tileID.z;
+  _z = (uint8_t)tileID.z;
   _x = tileID.x;
   _y = tileID.y;
   _dataSourceImplementsFeaturesForTile = source.dataSourceImplementsFeaturesForTile;
   _dataSourceImplementsFeaturesForBounds = source.dataSourceImplementsFeaturesForBounds;
   _dataSource = source.dataSource;
-  mln::style::CustomGeometrySource *rawSource =
-      static_cast<mln::style::CustomGeometrySource *>(source.rawSource);
-  _rawSource = rawSource;
+  _sourceIdentifier = [source.identifier copy];
+  _map = map;
   return self;
 }
 
@@ -126,34 +184,22 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
   } else if (self.dataSourceImplementsFeaturesForTile) {
     data = [self.dataSource featuresInTileAtX:self.x y:self.y zoomLevel:self.z];
   } else {
-    mln::CanonicalTileID tileID = mln::CanonicalTileID(self.z, self.x, self.y);
-    mln::LatLngBounds tileBounds = mln::LatLngBounds(tileID);
-    data =
-        [self.dataSource featuresInCoordinateBounds:MLNCoordinateBoundsFromLatLngBounds(tileBounds)
-                                          zoomLevel:self.z];
+    data = [self.dataSource featuresInCoordinateBounds:MLNCoordinateBoundsForTile(self.z, self.x,
+                                                                                 self.y)
+                                             zoomLevel:self.z];
   }
 
   if (![self isCancelled]) {
-    mln::FeatureCollection featureCollection;
-    featureCollection.reserve(data.count);
-    for (MLNShape<MLNFeature> *feature in data) {
-      if ([feature isMemberOfClass:[MLNShapeCollection class]]) {
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-          NSLog(@"MLNShapeCollection initialized with MLNFeatures will not retain attributes."
-                @"Use MLNShapeCollectionFeature to retain attributes instead."
-                @"This will be logged only once.");
-        });
-      }
-      mln::GeoJSONFeature geoJsonObject = [feature geoJSONObject].get<mln::GeoJSONFeature>();
-      featureCollection.push_back(geoJsonObject);
-    }
-    const auto geojson = mln::GeoJSON{featureCollection};
+    NSString *geojson = MLNFeatureCollectionJSON(data);
 
     // Note: potential race condition with `cancel`
     if (![self isCancelled]) {
-      if (auto *rawSource = self.rawSource) {
-        rawSource->setTileData(mln::CanonicalTileID(self.z, self.x, self.y), geojson);
+      if (mln_map map = self.map) {
+        // A command from a worker thread: submit it without waiting.
+        mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+        mln_map_set_custom_geometry_source_tile_data(
+            map, MLNFFIBufferView(self.sourceIdentifier), {self.z, self.x, self.y},
+            MLNFFIBufferView(geojson), NULL, &diagnostic);
       }
     }
   }
@@ -161,10 +207,34 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
 
 - (void)cancel {
   [super cancel];
-  self.rawSource = NULL;
+  self.map = MLN_HANDLE_NULL;
 }
 
 @end
+
+static void MLNComputedShapeSourceFetchTile(void *userData, mln_canonical_tile_id tileID) {
+  MLNComputedShapeSourceCallbacks *callbacks = (__bridge MLNComputedShapeSourceCallbacks *)userData;
+  MLNComputedShapeSource *source = callbacks.source;
+  if (!source) {
+    return;
+  }
+  NSOperation *operation =
+      [[MLNComputedShapeSourceFetchOperation alloc] initForSource:source
+                                                             tile:tileID
+                                                              map:callbacks->map.load()];
+  [callbacks.requestQueue addOperation:operation];
+}
+
+static void MLNComputedShapeSourceCancelTile(void *userData, mln_canonical_tile_id tileID) {
+  MLNComputedShapeSourceCallbacks *callbacks = (__bridge MLNComputedShapeSourceCallbacks *)userData;
+  for (MLNComputedShapeSourceFetchOperation *operation in callbacks.requestQueue.operations) {
+    if (operation.x == tileID.x && operation.y == tileID.y && operation.z == tileID.z) {
+      [operation cancel];
+    }
+  }
+}
+
+static void MLNComputedShapeSourceReleaseCallbacks(void *userData) { CFBridgingRelease(userData); }
 
 @implementation MLNComputedShapeSource
 
@@ -175,28 +245,58 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
   requestQueue.qualityOfService = NSQualityOfServiceUtility;
   requestQueue.maxConcurrentOperationCount = 4;
 
-  auto sourceOptions = MBGLCustomGeometrySourceOptionsFromDictionary(options);
-  sourceOptions.fetchTileFunction = ^void(const mln::CanonicalTileID &tileID) {
-    NSOperation *operation = [[MLNComputedShapeSourceFetchOperation alloc] initForSource:self
-                                                                                    tile:tileID];
-    [requestQueue addOperation:operation];
-  };
+  mln_custom_geometry_source_options sourceOptions =
+      MLNCustomGeometrySourceOptionsFromDictionary(options);
 
-  sourceOptions.cancelTileFunction = ^void(const mln::CanonicalTileID &tileID) {
-    for (MLNComputedShapeSourceFetchOperation *operation in requestQueue.operations) {
-      if (operation.x == tileID.x && operation.y == tileID.y && operation.z == tileID.z) {
-        [operation cancel];
-      }
-    }
-  };
-
-  auto source =
-      std::make_unique<mln::style::CustomGeometrySource>(identifier.UTF8String, sourceOptions);
-
-  if (self = [super initWithPendingSource:std::move(source)]) {
+  if (self = [super initWithPendingIdentifier:identifier]) {
     _requestQueue = requestQueue;
+    _sourceOptions = sourceOptions;
   }
   return self;
+}
+
+- (mln_status)mgl_addToMap:(MLNFFIMap *)map message:(NSString **)message {
+  MLNComputedShapeSourceCallbacks *callbacks = [[MLNComputedShapeSourceCallbacks alloc] init];
+  callbacks.source = self;
+  callbacks.identifier = self.identifier;
+  callbacks.requestQueue = self.requestQueue;
+  callbacks->map = map.handle;
+
+  mln_custom_geometry_source_options options = _sourceOptions;
+  options.fetch_tile = MLNComputedShapeSourceFetchTile;
+  options.cancel_tile = MLNComputedShapeSourceCancelTile;
+  options.user_data = (void *)CFBridgingRetain(callbacks);
+  options.release_user_data = MLNComputedShapeSourceReleaseCallbacks;
+
+  mln_map handle = map.handle;
+  NSString *identifier = self.identifier;
+  __block BOOL accepted = NO;
+  mln_status status = [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+    mln_status submitted = mln_map_add_custom_geometry_source(
+        handle, MLNFFIBufferView(identifier), &options, completion, diagnostic);
+    accepted = submitted == MLN_STATUS_OK;
+    return submitted;
+  }
+                        consume:nil
+                        message:message];
+  if (!accepted) {
+    // A refused submission leaves user_data with the caller.
+    CFBridgingRelease(options.user_data);
+  }
+  if (status == MLN_STATUS_OK) {
+    _callbacks = callbacks;
+  }
+  return status;
+}
+
+- (void)mgl_didAttachToMap:(MLNFFIMap *)map {
+  if (!map && _callbacks) {
+    // Detached: tiles fetched for the old map go nowhere.
+    _callbacks->map = MLN_HANDLE_NULL;
+    _callbacks.source = nil;
+    _callbacks = nil;
+    [self.requestQueue cancelAllOperations];
+  }
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
@@ -217,23 +317,21 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
                   y:(NSUInteger)y
           zoomLevel:(NSUInteger)zoomLevel {
   MLNAssertStyleSourceIsValid();
-  mln::CanonicalTileID tileID = mln::CanonicalTileID((uint8_t)zoomLevel, (uint32_t)x, (uint32_t)y);
-  mln::FeatureCollection featureCollection;
-  featureCollection.reserve(features.count);
-  for (MLNShape<MLNFeature> *feature in features) {
-    mln::GeoJSONFeature geoJsonObject = [feature geoJSONObject].get<mln::GeoJSONFeature>();
-    featureCollection.push_back(geoJsonObject);
-    if ([feature isMemberOfClass:[MLNShapeCollection class]]) {
-      static dispatch_once_t onceToken;
-      dispatch_once(&onceToken, ^{
-        NSLog(@"MLNShapeCollection initialized with MLNFeatures will not retain attributes."
-              @"Use MLNShapeCollectionFeature to retain attributes instead."
-              @"This will be logged only once.");
-      });
-    }
+  MLNFFIMap *map = self.mgl_map;
+  if (!map) {
+    // Classic stored the data in the pending core source, where nothing used it.
+    return;
   }
-  const auto geojson = mln::GeoJSON{featureCollection};
-  static_cast<mln::style::CustomGeometrySource *>(self.rawSource)->setTileData(tileID, geojson);
+  mln_canonical_tile_id tileID = {(uint8_t)zoomLevel, (uint32_t)x, (uint32_t)y};
+  NSString *geojson = MLNFeatureCollectionJSON(features);
+  mln_map handle = map.handle;
+  NSString *identifier = self.identifier;
+  [map perform:@"set the features of a computed shape source tile"
+        submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+          return mln_map_set_custom_geometry_source_tile_data(
+              handle, MLNFFIBufferView(identifier), tileID, MLNFFIBufferView(geojson), completion,
+              diagnostic);
+        }];
 }
 
 - (void)setDataSource:(id<MLNComputedShapeSourceDataSource>)dataSource {
@@ -259,14 +357,34 @@ mln::style::CustomGeometrySource::Options MBGLCustomGeometrySourceOptionsFromDic
 
 - (void)invalidateBounds:(MLNCoordinateBounds)bounds {
   MLNAssertStyleSourceIsValid();
-  ((mln::style::CustomGeometrySource *)self.rawSource)
-      ->invalidateRegion(MLNLatLngBoundsFromCoordinateBounds(bounds));
+  MLNFFIMap *map = self.mgl_map;
+  if (!map) {
+    return;
+  }
+  mln_lat_lng_bounds latLngBounds = MLNLatLngBoundsFromCoordinateBounds(bounds);
+  mln_map handle = map.handle;
+  NSString *identifier = self.identifier;
+  [map perform:@"invalidate a computed shape source region"
+        submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+          return mln_map_invalidate_custom_geometry_source_region(
+              handle, MLNFFIBufferView(identifier), latLngBounds, completion, diagnostic);
+        }];
 }
 
 - (void)invalidateTileAtX:(NSUInteger)x y:(NSUInteger)y zoomLevel:(NSUInteger)z {
   MLNAssertStyleSourceIsValid();
-  ((mln::style::CustomGeometrySource *)self.rawSource)
-      ->invalidateTile(mln::CanonicalTileID(z, (unsigned int)x, (unsigned int)y));
+  MLNFFIMap *map = self.mgl_map;
+  if (!map) {
+    return;
+  }
+  mln_canonical_tile_id tileID = {(uint32_t)z, (uint32_t)x, (uint32_t)y};
+  mln_map handle = map.handle;
+  NSString *identifier = self.identifier;
+  [map perform:@"invalidate a computed shape source tile"
+        submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+          return mln_map_invalidate_custom_geometry_source_tile(handle, MLNFFIBufferView(identifier),
+                                                                tileID, completion, diagnostic);
+        }];
 }
 
 @end

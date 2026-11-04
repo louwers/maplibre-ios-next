@@ -1,3 +1,5 @@
+// Based on platform/ios/src/MLNAnnotationView.mm at ios-v7.0.0
+
 #import "MLNAnnotationView.h"
 #import "MLNAnnotation.h"
 #import "MLNAnnotationView_Private.h"
@@ -9,7 +11,7 @@
 #import "NSBundle+MLNAdditions.h"
 #import "NSValue+MLNAdditions.h"
 
-#include <mln/util/constants.hpp>
+#import "MLNCoreGeometry.h"
 
 @interface MLNAnnotationView () <UIGestureRecognizerDelegate>
 
@@ -159,7 +161,7 @@
     // what is possible. The value will range from 0% (not pitched at all) to 100% (pitched as much
     // as the map view will allow). The map view's maximum pitch is defined in
     // `mln::util::PITCH_MAX`.
-    CGFloat pitchIntensity = pitch / MLNDegreesFromRadians(mln::util::PITCH_MAX);
+    CGFloat pitchIntensity = pitch / MLNDegreesFromRadians(MLNCorePitchMax);
 
     // The pitch adjusted scale is the inverse proportion of the maximum possible scale reduction
     // multiplied by the pitch intensity. For example, if the maximum scale reduction is 75% and the

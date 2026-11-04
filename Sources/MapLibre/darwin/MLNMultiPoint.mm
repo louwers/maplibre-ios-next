@@ -1,12 +1,18 @@
+// Based on platform/darwin/src/MLNMultiPoint.mm at ios-v7.0.0
+
 #import "MLNGeometry_Private.h"
+#import "MLNLatLngBounds.h"
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNMultiPoint_Private.h"
 #import "MLNShape_Private.h"
 #import "MLNTypes.h"
 #import "NSCoder+MLNAdditions.h"
 
+#include <optional>
+#include <vector>
+
 @implementation MLNMultiPoint {
-  std::optional<mln::LatLngBounds> _bounds;
+  std::optional<mln_lat_lng_bounds> _bounds;
   std::vector<CLLocationCoordinate2D> _coordinates;
 }
 
@@ -168,13 +174,13 @@
 
 - (MLNCoordinateBounds)overlayBounds {
   if (!_bounds) {
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
     for (auto coordinate : _coordinates) {
       if (!MLNLocationCoordinate2DIsValid(coordinate)) {
-        bounds = mln::LatLngBounds::empty();
+        bounds = MLNLatLngBoundsEmpty();
         break;
       }
-      bounds.extend(MLNLatLngFromLocationCoordinate2D(coordinate));
+      MLNLatLngBoundsExtend(bounds, MLNLatLngFromLocationCoordinate2D(coordinate));
     }
     _bounds = bounds;
   }
@@ -183,12 +189,6 @@
 
 - (BOOL)intersectsOverlayBounds:(MLNCoordinateBounds)overlayBounds {
   return MLNCoordinateBoundsIntersectsCoordinateBounds(self.overlayBounds, overlayBounds);
-}
-
-- (mln::Annotation)annotationObjectWithDelegate:(__unused id<MLNMultiPointDelegate>)delegate {
-  MLNAssert(NO, @"Cannot add an annotation from an instance of %@",
-            NSStringFromClass([self class]));
-  return mln::SymbolAnnotation(mln::Point<double>());
 }
 
 - (NSString *)description {

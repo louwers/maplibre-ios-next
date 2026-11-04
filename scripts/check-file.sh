@@ -24,10 +24,10 @@ for file in "$@"; do
   esac
   if ! xcrun clang -fsyntax-only -fobjc-arc -fmodules -fcxx-modules "${lang[@]}" \
       -target arm64-apple-ios15.5-simulator -isysroot "$sdk" \
-      -F "$ffi" \
+      -F "$ffi" ${MLN_CHECK_EXTRA_INCLUDE:+-I "$MLN_CHECK_EXTRA_INCLUDE"} \
       -I "$src/include/MapLibre" -I "$src/darwin" -I "$src/ios" -I "$src/ffi" -I "$src/style" \
       -I "$src/style/generated" -I "$src/vendor/SMCalloutView" -I "$src/vendor/polylabel" \
-      -DMLN_NEXT=1 -Wno-nullability-completeness -ferror-limit=50 "$file"; then
+      -DMLN_NEXT=1 -DMLN_RENDER_BACKEND_METAL=1 -Wno-nullability-completeness -ferror-limit=50 "$file"; then
     status=1
   fi
 done

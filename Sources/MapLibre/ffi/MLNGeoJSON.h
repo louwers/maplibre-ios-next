@@ -31,7 +31,9 @@ FOUNDATION_EXTERN id<MLNFeature> MLNFeatureFromGeoJSONFeature(NSDictionary *feat
 FOUNDATION_EXTERN NSArray<MLNShape<MLNFeature> *> *MLNFeaturesFromGeoJSONFeatures(
     NSArray<NSDictionary *> *features);
 
-/// The GeoJSON object for a shape: its `geoJSONDictionary`.
+/// The GeoJSON object for a shape, as classic's `geoJSONObject` built the
+/// mln::GeoJSON it sent to the core: a geometry for a plain shape, a Feature for a
+/// feature, a FeatureCollection for an MLNShapeCollectionFeature.
 FOUNDATION_EXTERN NSDictionary *MLNGeoJSONObjectFromShape(MLNShape *shape);
 
 /// The GeoJSON text for a shape, as the C API takes it.

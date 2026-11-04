@@ -1,10 +1,12 @@
+// Based on platform/darwin/src/MLNMapCamera.mm at ios-v7.0.0
+
 #import "MLNMapCamera.h"
 #import "MLNGeometry_Private.h"
 #import "MLNLoggingConfiguration_Private.h"
 
 #import <CoreLocation/CoreLocation.h>
 
-#include <mln/math/wrap.hpp>
+#import "MLNCoreGeometry.h"
 
 @implementation MLNMapCamera
 
@@ -31,7 +33,7 @@
                                                          longitude:eyeCoordinate.longitude];
     CLLocationDistance groundDistance = [eyeLocation distanceFromLocation:centerLocation];
     CGFloat radianPitch = atan2(eyeAltitude, groundDistance);
-    pitch = mln::util::wrap(90 - MLNDegreesFromRadians(radianPitch), 0.0, 360.0);
+    pitch = MLNCoreWrap(90 - MLNDegreesFromRadians(radianPitch), 0.0, 360.0);
   }
 
   return [[self alloc] initWithCenterCoordinate:centerCoordinate

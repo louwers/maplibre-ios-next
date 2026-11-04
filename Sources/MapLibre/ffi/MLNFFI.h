@@ -94,6 +94,11 @@ FOUNDATION_EXTERN NSString *MLNFFIStatusDescription(mln_status status);
 + (void)setCachePath:(nullable NSString *)path;
 + (nullable NSString *)cachePath;
 
+/// Supplies the cache path when none was set: MLNOfflineStorage registers the
+/// classic database location (or MLNOfflineStorageDatabasePath) here, so the
+/// runtime opens it no matter which object creates the runtime first.
++ (void)setDefaultCachePathProvider:(nullable NSString *_Nullable (^)(void))provider;
+
 @property (nonatomic, readonly) mln_runtime handle;
 
 /// Blocks until the runtime-level call completes. Returns its status and

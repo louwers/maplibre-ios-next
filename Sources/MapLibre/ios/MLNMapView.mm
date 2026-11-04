@@ -1,39 +1,9 @@
 #import "MLNMapView+Impl.h"
 #import "MLNMapView_Private.h"
 
-#include <mln/annotation/annotation.hpp>
-#include <mln/layermanager/layer_manager.hpp>
-#include <mln/map/camera.hpp>
-#include <mln/map/map.hpp>
-#include <mln/map/map_options.hpp>
-#include <mln/map/mode.hpp>
-#include <mln/math/wrap.hpp>
-#if MLN_RENDER_BACKEND_METAL
-#include <mln/mtl/mtl_fwd.hpp>
-#include <mln/mtl/render_pass.hpp>
-#endif
-#include <mln/plugin/plugin_layer.hpp>
-#include <mln/plugin/plugin_layer_factory.hpp>
-#include <mln/plugin/plugin_layer_impl.hpp>
-#include <mln/renderer/paint_parameters.hpp>
-#include <mln/renderer/renderer.hpp>
-#include <mln/storage/network_status.hpp>
-#include <mln/storage/resource_options.hpp>
-#include <mln/style/image.hpp>
-#include <mln/style/layers/custom_layer.hpp>
-#include <mln/style/style.hpp>
-#include <mln/style/transition_options.hpp>
-#include <mln/util/action_journal.hpp>
-#include <mln/util/chrono.hpp>
-#include <mln/util/client_options.hpp>
-#include <mln/util/constants.hpp>
-#include <mln/util/exception.hpp>
-#include <mln/util/geo.hpp>
-#include <mln/util/image.hpp>
-#include <mln/util/platform.hpp>
-#include <mln/util/projection.hpp>
-#include <mln/util/run_loop.hpp>
-#include <mln/util/string.hpp>
+#import "MLNCoreShim.h"
+#import "MLNFFIMap+Style.h"
+#import "MLNGeoJSON.h"
 
 #import "MLNFeature_Private.h"
 #import "MLNFoundation_Private.h"
@@ -41,7 +11,6 @@
 #import "MLNMultiPoint_Private.h"
 #import "MLNOfflineStorage_Private.h"
 #import "MLNRendererConfiguration.h"
-#import "MLNRendererFrontend.h"
 #import "MLNShape_Private.h"
 #import "MLNVectorTileSource_Private.h"
 #import "MapLibre.h"
@@ -57,7 +26,6 @@
 #import "UIView+MLNAdditions.h"
 #import "UIViewController+MLNAdditions.h"
 
-#import "MLNActionJournalOptions_Private.h"
 #import "MLNAnnotationContainerView.h"
 #import "MLNAnnotationContainerView_Private.h"
 #import "MLNAnnotationImage_Private.h"
@@ -72,12 +40,10 @@
 #import "MLNMapProjection.h"
 #import "MLNNetworkConfiguration_Private.h"
 #import "MLNPluginLayer.h"
-#include "MLNPluginStyleLayer_Private.h"
 #import "MLNReachability.h"
 #import "MLNRenderingStats_Private.h"
 #import "MLNScaleBar.h"
 #import "MLNSettings_Private.h"
-#import "MLNStyleLayerManager.h"
 #import "MLNStyleLayer_Private.h"
 #import "MLNStyle_Private.h"
 #import "MLNUserLocationAnnotationView.h"
@@ -332,6 +298,32 @@ typedef std::unordered_map<MLNAnnotationTag, MLNAnnotationContext> MLNAnnotation
 /// Mapping from an annotation object to an annotation tag.
 typedef std::map<id<MLNAnnotation>, MLNAnnotationTag> MLNAnnotationObjectTagMap;
 
+/// The annotation the map renders for a polyline or polygon, as
+/// -[MLNPolyline annotationObjectWithDelegate:] and
+/// -[MLNPolygon annotationObjectWithDelegate:] built it for the core's
+/// annotation manager.
+static mln::Annotation MLNAnnotationObjectForMultiPoint(MLNMultiPoint *shape,
+                                                        id<MLNMultiPointDelegate> delegate) {
+  if ([shape isKindOfClass:[MLNPolygon class]]) {
+    MLNPolygon *polygon = (MLNPolygon *)shape;
+    mln::FillAnnotation annotation{polygon.geoJSONDictionary};
+    annotation.opacity = static_cast<float>([delegate alphaForShapeAnnotation:polygon]);
+    annotation.outlineColor = [delegate strokeColorForShapeAnnotation:polygon];
+    annotation.color = [delegate fillColorForPolygonAnnotation:polygon];
+    return annotation;
+  }
+  if ([shape isKindOfClass:[MLNPolyline class]]) {
+    MLNPolyline *polyline = (MLNPolyline *)shape;
+    mln::LineAnnotation annotation{polyline.geoJSONDictionary};
+    annotation.opacity = static_cast<float>([delegate alphaForShapeAnnotation:polyline]);
+    annotation.color = [delegate strokeColorForShapeAnnotation:polyline];
+    annotation.width = static_cast<float>([delegate lineWidthForPolylineAnnotation:polyline]);
+    return annotation;
+  }
+  MLNCAssert(NO, @"Cannot add an annotation from an instance of %@", NSStringFromClass([shape class]));
+  return mln::SymbolAnnotation{mln::Point<double>(), ""};
+}
+
 mln::util::UnitBezier MLNUnitBezierForMediaTimingFunction(CAMediaTimingFunction *function) {
   if (!function) {
     function = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionDefault];
@@ -456,9 +448,10 @@ public:
 @end
 
 @implementation MLNMapView {
-  std::unique_ptr<mln::Map> _mbglMap;
+  // The C API map, render session and view, owned by _mbglView; _mbglMap is
+  // its core-like interface (MLNCoreShim.h).
+  mln::Map *_mbglMap;
   std::unique_ptr<MLNMapViewImpl> _mbglView;
-  std::unique_ptr<MLNRenderFrontend> _rendererFrontend;
 
   BOOL _opaque;
 
@@ -634,11 +627,12 @@ public:
     return self.residualStyleURL;
   }
 
-  if (self.mbglMap.getStyle().getJSON().length() > 0 && self.mbglMap.getStyle().getURL().empty()) {
+  std::string styleURL = self.mbglMap.getStyleURL();
+  if (styleURL.empty() && self.mbglMap.getStyleJSON().length() > 0) {
     return [NSURL URLWithString:@"local://style.json"];
   }
 
-  NSString *styleURLString = @(self.mbglMap.getStyle().getURL().c_str()).mgl_stringOrNilIfEmpty;
+  NSString *styleURLString = @(styleURL.c_str()).mgl_stringOrNilIfEmpty;
   MLNAssert(styleURLString, @"Invalid style URL string %@", styleURLString);
   return styleURLString ? [NSURL URLWithString:styleURLString] : nil;
 }
@@ -650,7 +644,7 @@ public:
   MLNLogDebug(@"Setting styleURL: %@", styleURL);
   styleURL = styleURL.mgl_URLByStandardizingScheme;
   self.style = nil;
-  self.mbglMap.getStyle().loadURL([[styleURL absoluteString] UTF8String]);
+  self.mbglMap.loadStyleURL([[styleURL absoluteString] UTF8String]);
 }
 
 - (NSString *)styleJSON {
@@ -660,13 +654,13 @@ public:
 - (void)setStyleJSON:(NSString *)styleJSON {
   // Reset style and load new JSON
   self.style = nil;
-  self.mbglMap.getStyle().loadJSON([styleJSON UTF8String]);
+  self.mbglMap.loadStyleJSON([styleJSON UTF8String]);
 }
 
 - (IBAction)reloadStyle:(__unused id)sender {
   MLNLogInfo(@"Reloading style.");
   NSURL *styleURL = self.styleURL;
-  self.mbglMap.getStyle().loadURL("");
+  self.mbglMap.loadStyleURL("");
   self.styleURL = styleURL;
 }
 
@@ -679,8 +673,8 @@ public:
   return *_mbglMap;
 }
 
-- (mln::Renderer *)renderer {
-  return _rendererFrontend->getRenderer();
+- (MLNFFIMap *)ffiMap {
+  return _mbglView ? _mbglView->ffiMap() : nil;
 }
 
 - (void)commonInitWithOptions:(MLNMapOptions *)mlnMapoptions {
@@ -708,61 +702,29 @@ public:
 
   self.preferredFramesPerSecond = MLNMapViewPreferredFramesPerSecondDefault;
 
-  // setup mbgl view
-  _mbglView = MLNMapViewImpl::Create(self);
+  // Delete the pre-offline ambient cache at ~/Library/Caches/cache.db.
+  NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+  NSString *fileCachePath = [paths.firstObject stringByAppendingPathComponent:@"cache.db"];
+  [[NSFileManager defaultManager] removeItemAtPath:fileCachePath error:NULL];
+
+  // setup the map. The C API takes the pixel ratio when the map is created
+  // and has no options for a local font family, cross-source collisions,
+  // FastPFOR, rendered feature info, tile server options, an API key or the
+  // action journal (C_API_GAPS.md).
+  MLNRendererConfiguration *config = [MLNRendererConfiguration currentConfiguration];
+  [MLNOfflineStorage sharedOfflineStorage];
+  mln::Size size = self.size;
+  _mbglView = MLNMapViewImpl::Create(self, CGSizeMake(size.width, size.height), config.scaleFactor);
+  NSAssert(!_mbglMap, @"_mbglMap should be NULL");
+  _mbglMap = &_mbglView->shim();
+  _mbglMap->setConstrainMode(mln::ConstrainMode::None);
+  _mbglMap->setViewportMode(mln::ViewportMode::Default);
 
   BOOL background =
       [UIApplication sharedApplication].applicationState == UIApplicationStateBackground;
   if (!background) {
     _mbglView->createView();
   }
-  // Delete the pre-offline ambient cache at ~/Library/Caches/cache.db.
-  NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-  NSString *fileCachePath = [paths.firstObject stringByAppendingPathComponent:@"cache.db"];
-  [[NSFileManager defaultManager] removeItemAtPath:fileCachePath error:NULL];
-
-  // setup mbgl map
-  MLNRendererConfiguration *config = [MLNRendererConfiguration currentConfiguration];
-
-  std::optional<std::string> localFontFamilyName =
-      config.localFontFamilyName
-          ? std::optional<std::string>(std::string(config.localFontFamilyName.UTF8String))
-          : std::nullopt;
-  auto renderer = std::make_unique<mln::Renderer>(_mbglView->getRendererBackend(),
-                                                  config.scaleFactor, localFontFamilyName);
-  BOOL enableCrossSourceCollisions = !config.perSourceCollisions;
-  _rendererFrontend = std::make_unique<MLNRenderFrontend>(std::move(renderer), self,
-                                                          _mbglView->getRendererBackend());
-
-  mln::MapOptions mapOptions;
-  mapOptions.withMapMode(mln::MapMode::Continuous)
-      .withSize(self.size)
-      .withPixelRatio(config.scaleFactor)
-      .withConstrainMode(mln::ConstrainMode::None)
-      .withViewportMode(mln::ViewportMode::Default)
-      .withCrossSourceCollisions(enableCrossSourceCollisions)
-      .withFastPFOREnabled(mlnMapoptions.fastPFOREnabled)
-      .withRenderedFeatureInfo(mlnMapoptions.featureInfoEnabled);
-
-  mln::TileServerOptions *tileServerOptions =
-      [[MLNSettings sharedSettings] tileServerOptionsInternal];
-  mln::ResourceOptions resourceOptions;
-  resourceOptions.withCachePath(MLNOfflineStorage.sharedOfflineStorage.databasePath.UTF8String)
-      .withAssetPath([NSBundle mainBundle].resourceURL.path.UTF8String)
-      .withTileServerOptions(*tileServerOptions);
-  mln::ClientOptions clientOptions;
-
-  auto apiKey = [[MLNSettings sharedSettings] apiKey];
-  if (apiKey) {
-    resourceOptions.withApiKey([apiKey UTF8String]);
-  }
-
-  const mln::util::ActionJournalOptions &actionJournalOptions =
-      [mlnMapoptions.actionJournalOptions getCoreOptions];
-
-  NSAssert(!_mbglMap, @"_mbglMap should be NULL");
-  _mbglMap = std::make_unique<mln::Map>(*_rendererFrontend, *_mbglView, mapOptions, resourceOptions,
-                                        clientOptions, actionJournalOptions);
 
   // start paused if launch into the background
   if (background) {
@@ -1036,7 +998,9 @@ public:
 
   MLNReachability *reachability = [notification object];
   if (!_isWaitingForRedundantReachableNotification && [reachability isReachable]) {
-    mln::NetworkStatus::Reachable();
+    // The core retried failed requests here; the C API can only set the
+    // status, which it already is (C_API_GAPS.md).
+    mln_network_set_status(MLN_NETWORK_STATUS_ONLINE, NULL);
   }
   _isWaitingForRedundantReachableNotification = NO;
 }
@@ -1050,13 +1014,10 @@ public:
     self.residualStyleURL = self.styleURL;
   }
 
-  // Tear down C++ objects, insuring worker threads correctly terminate.
-  // Because of how _mbglMap is constructed, we need to destroy it first.
-  _mbglMap.reset();
+  // Tear down the map and its render session.
+  _mbglMap = nullptr;
 
   _mbglView.reset();
-
-  _rendererFrontend.reset();
 
   _style = nil;
 }
@@ -1114,8 +1075,8 @@ public:
 - (void)didReceiveMemoryWarning {
   MLNAssertIsMainThread();
 
-  if (!self.dormant && _rendererFrontend) {
-    _rendererFrontend->reduceMemoryUse();
+  if (!self.dormant && _mbglView) {
+    _mbglView->reduceMemoryUse();
   }
 }
 
@@ -1350,17 +1311,16 @@ public:
   self.needsDisplayRefresh = NO;
 
   if (!self.dormant && needsRender) {
-    // It's important to call this *before* `_rendererFrontend->render()`, as
-    // that function saves the current `updateParameters` before rendering. If this
-    // occurs after then the views will be a frame behind.
+    // Update the views before demanding the frame, so they match the camera
+    // the frame is likely to draw.
     //
     // The update parameters will have been updated earlier, for example by
     // calls to easeTo, flyTo, called from gesture handlers.
 
     [self updateViewsWithCurrentUpdateParameters];
 
-    if (_rendererFrontend) {
-      _rendererFrontend->render();
+    if (_mbglView) {
+      _mbglView->display();
     }
   }
 
@@ -1608,11 +1568,13 @@ public:
   }
 
   if (self.needsDisplayRefresh || (self.pendingCompletionBlocks.count > 0)) {
-    // UIView update logic has moved into `renderSync` above, which now gets
-    // triggered by a call to setNeedsDisplay.
-    // See MLNMapViewOpenGLImpl::display() for more details
-    _mbglView->display();
+    // UIView update logic lives in `renderSync`; the core worker renders the
+    // frame that the demand below asks for.
+    [self renderSync];
   }
+  // Keep a frame demand armed; the render session renders when the map has
+  // an update.
+  _mbglView->display();
 
   // TODO: Fix
   if (self.experimental_enableFrameRateMeasurement) {
@@ -1651,8 +1613,8 @@ public:
 
     self.dormant = YES;
 
-    if (_rendererFrontend) {
-      _rendererFrontend->reduceMemoryUse();
+    if (_mbglView) {
+      _mbglView->reduceMemoryUse();
     }
 
     _mbglView->deleteView();
@@ -1971,8 +1933,8 @@ public:
   // For OpenGL this calls glFinish as recommended in
   // https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/ImplementingaMultitasking-awareOpenGLESApplication/ImplementingaMultitasking-awareOpenGLESApplication.html#//apple_ref/doc/uid/TP40008793-CH5-SW1
   // reduceMemoryUse(), calls performCleanup(), which calls glFinish
-  if (_rendererFrontend) {
-    _rendererFrontend->reduceMemoryUse();
+  if (_mbglView) {
+    _mbglView->reduceMemoryUse();
   }
 }
 
@@ -1993,8 +1955,8 @@ public:
   // For OpenGL this calls glFinish as recommended in
   // https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/OpenGLES_ProgrammingGuide/ImplementingaMultitasking-awareOpenGLESApplication/ImplementingaMultitasking-awareOpenGLESApplication.html#//apple_ref/doc/uid/TP40008793-CH5-SW1
   // reduceMemoryUse(), calls performCleanup(), which calls glFinish
-  if (_rendererFrontend) {
-    _rendererFrontend->reduceMemoryUse();
+  if (_mbglView) {
+    _mbglView->reduceMemoryUse();
   }
 
   // We now completely remove the display link, and the renderable resource.
@@ -3003,7 +2965,8 @@ static void *windowScreenContext = &windowScreenContext;
     // but safely updated.
     if (annotation == [self annotationWithTag:annotationTag]) {
       // Update the annotation’s backing geometry to match the annotation model object.
-      self.mbglMap.updateAnnotation(annotationTag, [annotation annotationObjectWithDelegate:self]);
+      self.mbglMap.updateAnnotation(annotationTag,
+                                    MLNAnnotationObjectForMultiPoint(annotation, self));
       [self updateCalloutView];
     }
   } else if (context == windowScreenContext) {
@@ -3093,7 +3056,7 @@ static void *windowScreenContext = &windowScreenContext;
 
 - (void)resetPosition {
   MLNLogInfo(@"Resetting the map to the current style’s default viewport.");
-  auto camera = self.mbglMap.getStyle().getDefaultCamera();
+  auto camera = self.mbglMap.getStyleDefaultCamera();
 
   double pitch = camera.pitch ? *camera.pitch : 0.0;
   double bearing = camera.bearing ? *camera.bearing : 0.0;
@@ -3188,11 +3151,11 @@ static void *windowScreenContext = &windowScreenContext;
 }
 
 - (void)setTileCacheEnabled:(BOOL)enabled {
-  _rendererFrontend->setTileCacheEnabled(enabled);
+  _mbglView->setTileCacheEnabled(enabled);
 }
 
 - (BOOL)tileCacheEnabled {
-  return _rendererFrontend->getTileCacheEnabled();
+  return _mbglView->getTileCacheEnabled();
 }
 
 - (void)setTileLodMinRadius:(double)tileLodMinRadius {
@@ -4503,7 +4466,7 @@ static void *windowScreenContext = &windowScreenContext;
   CLLocationDirection direction = camera.heading < 0 ? currentCamera.heading : camera.heading;
 
   mln::CameraOptions cameraOptions =
-      self.mbglMap.cameraForGeometry([shape geometryObject], padding, direction, pitch);
+      self.mbglMap.cameraForGeometry(shape.geometryObject, padding, direction, pitch);
 
   return [self cameraForCameraOptions:cameraOptions];
 }
@@ -4519,7 +4482,7 @@ static void *windowScreenContext = &windowScreenContext;
   padding += MLNEdgeInsetsFromNSEdgeInsets(self.contentInset);
 
   mln::CameraOptions cameraOptions =
-      self.mbglMap.cameraForGeometry([shape geometryObject], padding, direction);
+      self.mbglMap.cameraForGeometry(shape.geometryObject, padding, direction);
 
   return [self cameraForCameraOptions:cameraOptions];
 }
@@ -4809,7 +4772,7 @@ static void *windowScreenContext = &windowScreenContext;
 
       _isChangingAnnotationLayers = YES;
       MLNAnnotationTag annotationTag =
-          self.mbglMap.addAnnotation([multiPoint annotationObjectWithDelegate:self]);
+          self.mbglMap.addAnnotation(MLNAnnotationObjectForMultiPoint(multiPoint, self));
       MLNAnnotationContext context;
       context.annotation = annotation;
       _annotationContextsByAnnotationTag[annotationTag] = context;
@@ -5020,18 +4983,18 @@ static void *windowScreenContext = &windowScreenContext;
   return 1.0;
 }
 
-- (mln::Color)strokeColorForShapeAnnotation:(MLNShape *)annotation {
+- (UIColor *)strokeColorForShapeAnnotation:(MLNShape *)annotation {
   UIColor *color = (_delegateHasStrokeColorsForShapeAnnotations
                         ? [self.delegate mapView:self strokeColorForShapeAnnotation:annotation]
                         : self.tintColor);
-  return color.mgl_color;
+  return color;
 }
 
-- (mln::Color)fillColorForPolygonAnnotation:(MLNPolygon *)annotation {
+- (UIColor *)fillColorForPolygonAnnotation:(MLNPolygon *)annotation {
   UIColor *color = (_delegateHasFillColorsForShapeAnnotations
                         ? [self.delegate mapView:self fillColorForPolygonAnnotation:annotation]
                         : self.tintColor);
-  return color.mgl_color;
+  return color;
 }
 
 - (CGFloat)lineWidthForPolylineAnnotation:(MLNPolyline *)annotation {
@@ -5047,8 +5010,7 @@ static void *windowScreenContext = &windowScreenContext;
   annotationImage.delegate = self;
 
   // add sprite
-  self.mbglMap.addAnnotationImage(
-      [annotationImage.image mgl_styleImageWithIdentifier:iconIdentifier]);
+  self.mbglMap.addAnnotationImage(iconIdentifier, annotationImage.image);
 
   // Create a slop area with a “radius” equal in size to the annotation
   // image’s alignment rect, allowing the eventual tap to be on any point
@@ -5360,14 +5322,14 @@ static void *windowScreenContext = &windowScreenContext;
 
 /// Returns the tags of the annotations coincident with the given rectangle.
 - (std::vector<MLNAnnotationTag>)annotationTagsInRect:(CGRect)rect {
-  return _rendererFrontend->getRenderer()->queryPointAnnotations({
+  return self.mbglMap.queryPointAnnotations({
       {CGRectGetMinX(rect), CGRectGetMinY(rect)},
       {CGRectGetMaxX(rect), CGRectGetMaxY(rect)},
   });
 }
 
 - (std::vector<MLNAnnotationTag>)shapeAnnotationTagsInRect:(CGRect)rect {
-  return _rendererFrontend->getRenderer()->queryShapeAnnotations({
+  return self.mbglMap.queryShapeAnnotations({
       {CGRectGetMinX(rect), CGRectGetMinY(rect)},
       {CGRectGetMaxX(rect), CGRectGetMaxY(rect)},
   });
@@ -6661,25 +6623,9 @@ static void *windowScreenContext = &windowScreenContext;
               NSStringFromCGPoint(point), styleLayerIdentifiers, predicate);
   mln::ScreenCoordinate screenCoordinate = {point.x, point.y};
 
-  std::optional<std::vector<std::string>> optionalLayerIDs;
-  if (styleLayerIdentifiers) {
-    __block std::vector<std::string> layerIDs;
-    layerIDs.reserve(styleLayerIdentifiers.count);
-    [styleLayerIdentifiers
-        enumerateObjectsUsingBlock:^(NSString *_Nonnull identifier, BOOL *_Nonnull stop) {
-          layerIDs.push_back(identifier.UTF8String);
-        }];
-    optionalLayerIDs = layerIDs;
-  }
-
-  std::optional<mln::style::Filter> optionalFilter;
-  if (predicate) {
-    optionalFilter = predicate.mgl_filter;
-  }
-
-  std::vector<mln::Feature> features = _rendererFrontend->getRenderer()->queryRenderedFeatures(
-      screenCoordinate, {optionalLayerIDs, optionalFilter});
-  return MLNFeaturesFromMBGLFeatures(features);
+  NSArray<NSDictionary *> *features = self.mbglMap.queryRenderedFeatures(
+      screenCoordinate, styleLayerIdentifiers, predicate ? predicate.mgl_filterJSONObject : nil);
+  return MLNFeaturesFromGeoJSONFeatures(features);
 }
 
 - (NSArray<id<MLNFeature>> *)visibleFeaturesInRect:(CGRect)rect {
@@ -6706,35 +6652,32 @@ static void *windowScreenContext = &windowScreenContext;
       {CGRectGetMaxX(rect), CGRectGetMaxY(rect)},
   };
 
-  std::optional<std::vector<std::string>> optionalLayerIDs;
-  if (styleLayerIdentifiers) {
-    __block std::vector<std::string> layerIDs;
-    layerIDs.reserve(styleLayerIdentifiers.count);
-    [styleLayerIdentifiers
-        enumerateObjectsUsingBlock:^(NSString *_Nonnull identifier, BOOL *_Nonnull stop) {
-          layerIDs.push_back(identifier.UTF8String);
-        }];
-    optionalLayerIDs = layerIDs;
-  }
-
-  std::optional<mln::style::Filter> optionalFilter;
-  if (predicate) {
-    optionalFilter = predicate.mgl_filter;
-  }
-
-  std::vector<mln::Feature> features = _rendererFrontend->getRenderer()->queryRenderedFeatures(
-      screenBox, {optionalLayerIDs, optionalFilter});
-  return MLNFeaturesFromMBGLFeatures(features);
+  NSArray<NSDictionary *> *features = self.mbglMap.queryRenderedFeatures(
+      screenBox, styleLayerIdentifiers, predicate ? predicate.mgl_filterJSONObject : nil);
+  return MLNFeaturesFromGeoJSONFeatures(features);
 }
 
 - (unsigned)renderedFeatureCountForFeatureID:(nullable NSString *)featureID_
                                      LayerID:(nullable NSString *)layerID_
                                     SourceID:(nullable NSString *)sourceID_ {
-  const auto featureID =
-      featureID_ ? featureID_.UTF8String : std::optional<std::string>(std::nullopt);
-  const auto layerID = layerID_ ? layerID_.UTF8String : std::optional<std::string>(std::nullopt);
-  const auto sourceID = sourceID_ ? sourceID_.UTF8String : std::optional<std::string>(std::nullopt);
-  return static_cast<unsigned>(self.mbglMap.getRenderedFeatureCount(featureID, layerID, sourceID));
+  // The C API has no rendered feature count; count the rendered features in
+  // the view that match (C_API_GAPS.md).
+  CGRect bounds = self.bounds;
+  mln::ScreenBox box = {{CGRectGetMinX(bounds), CGRectGetMinY(bounds)},
+                        {CGRectGetMaxX(bounds), CGRectGetMaxY(bounds)}};
+  NSArray<NSDictionary *> *features =
+      self.mbglMap.queryRenderedFeatures(box, layerID_ ? [NSSet setWithObject:layerID_] : nil, nil);
+  unsigned count = 0;
+  for (NSDictionary *feature in features) {
+    if (featureID_ && ![[feature[@"id"] description] isEqualToString:featureID_]) {
+      continue;
+    }
+    if (sourceID_ && feature[@"source"] && ![feature[@"source"] isEqual:sourceID_]) {
+      continue;
+    }
+    count++;
+  }
+  return count;
 }
 
 // MARK: - Utility -
@@ -6928,7 +6871,7 @@ static void *windowScreenContext = &windowScreenContext;
 }
 
 - (void)mapViewDidFinishRenderingFrameFullyRendered:(BOOL)fullyRendered
-                                     renderingStats:(const mln::gfx::RenderingStats &)stats {
+                                     renderingStats:(mln_rendering_stats)stats {
   if (!_mbglMap) {
     return;
   }
@@ -6944,8 +6887,7 @@ static void *windowScreenContext = &windowScreenContext;
       _renderingStats = [[MLNRenderingStats alloc] init];
     }
 
-    [_renderingStats setCoreData:stats];
-    [_renderingStats setFeatureInfo:stats];
+    [_renderingStats mgl_setFFIStats:stats];
     [self.delegate mapViewDidFinishRenderingFrame:self
                                     fullyRendered:fullyRendered
                                    renderingStats:_renderingStats];
@@ -6955,8 +6897,8 @@ static void *windowScreenContext = &windowScreenContext;
                                    fullyRendered:frameEncodingTime:frameRenderingTime:)]) {
     [self.delegate mapViewDidFinishRenderingFrame:self
                                     fullyRendered:fullyRendered
-                                frameEncodingTime:stats.encodingTime
-                               frameRenderingTime:stats.renderingTime];
+                                frameEncodingTime:stats.encoding_time
+                               frameRenderingTime:stats.rendering_time];
   } else if ([self.delegate respondsToSelector:@selector(mapViewDidFinishRenderingFrame:
                                                                           fullyRendered:)]) {
     [self.delegate mapViewDidFinishRenderingFrame:self fullyRendered:fullyRendered];
@@ -7000,7 +6942,7 @@ static void *windowScreenContext = &windowScreenContext;
     return;
   }
 
-  self.style = [[MLNStyle alloc] initWithRawStyle:&self.mbglMap.getStyle() stylable:self];
+  self.style = [[MLNStyle alloc] initWithMap:_mbglView->ffiMap() stylable:self];
   if ([self.delegate respondsToSelector:@selector(mapView:didFinishLoadingStyle:)]) {
     [self.delegate mapView:self didFinishLoadingStyle:self.style];
   }
@@ -7020,8 +6962,7 @@ static void *windowScreenContext = &windowScreenContext;
   if ([self.delegate respondsToSelector:@selector(mapView:didFailToLoadImage:)]) {
     MLNImage *imageToLoad = [self.delegate mapView:self didFailToLoadImage:imageName];
     if (imageToLoad) {
-      auto image = [imageToLoad mgl_styleImageWithIdentifier:imageName];
-      self.mbglMap.getStyle().addImage(std::move(image));
+      [imageToLoad mgl_addToMap:_mbglView->ffiMap() withName:imageName];
     }
   }
 }
@@ -7596,180 +7537,33 @@ static void *windowScreenContext = &windowScreenContext;
  Adds a plug-in layer that is external to this library
  */
 - (void)addPluginLayerType:(Class)pluginLayerClass {
-  auto layerManager = mln::LayerManager::get();
-  auto darwinLayerManager = (mln::LayerManagerDarwin *)layerManager;
-
-  MLNPluginLayerCapabilities *capabilities = [pluginLayerClass layerCapabilities];
-
-  std::string layerType = [capabilities.layerID UTF8String];
-
-  // Default values
-  mln::style::LayerTypeInfo::Source source = mln::style::LayerTypeInfo::Source::NotRequired;
-  mln::style::LayerTypeInfo::TileKind tileKind = mln::style::LayerTypeInfo::TileKind::NotRequired;
-  mln::style::LayerTypeInfo::FadingTiles fadingTiles =
-      mln::style::LayerTypeInfo::FadingTiles::NotRequired;
-  mln::style::LayerTypeInfo::Layout layout = mln::style::LayerTypeInfo::Layout::NotRequired;
-  mln::style::LayerTypeInfo::CrossTileIndex crossTileIndex =
-      mln::style::LayerTypeInfo::CrossTileIndex::NotRequired;
-
-  mln::style::LayerTypeInfo::Pass3D pass3D = mln::style::LayerTypeInfo::Pass3D::NotRequired;
-  if (capabilities.requiresPass3D) {
-    pass3D = mln::style::LayerTypeInfo::Pass3D::Required;
-  }
-
-  auto factory = std::make_unique<mln::PluginLayerPeerFactory>(
-      layerType, source, pass3D, layout, fadingTiles, crossTileIndex, tileKind);
-
-  __weak MLNMapView *weakMapView = self;
-
-  Class layerClass = pluginLayerClass;
-  factory->setOnLayerCreatedEvent([layerClass, weakMapView,
-                                   pluginLayerClass](mln::style::PluginLayer *pluginLayer) {
-    // NSLog(@"Creating Plugin Layer: %@", layerClass);
-    MLNPluginLayer *layer = [[layerClass alloc] init];
-    if (!weakMapView.pluginLayers) {
-      weakMapView.pluginLayers = [NSMutableArray array];
-    }
-    [weakMapView.pluginLayers addObject:layer];
-
-    // Use weak here so there isn't a retain cycle
-    MLNPluginLayer *weakPlugInLayer = layer;
-
-    pluginLayer->_platformReference = (__bridge void *)layer;
-
-    MLNPluginLayerCapabilities *capabilities = [pluginLayerClass layerCapabilities];
-    auto pluginLayerImpl = (mln::style::PluginLayer::Impl *)pluginLayer->baseImpl.get();
-    auto &pm = pluginLayerImpl->_propertyManager;
-    for (MLNPluginLayerProperty *property in capabilities.layerProperties) {
-      mln::style::PluginLayerProperty *p = new mln::style::PluginLayerProperty();
-      switch (property.propertyType) {
-        case MLNPluginLayerPropertyTypeSingleFloat:
-          p->_propertyType = mln::style::PluginLayerProperty::PropertyType::SingleFloat;
-          p->_defaultSingleFloatValue = property.singleFloatDefaultValue;
-          break;
-        case MLNPluginLayerPropertyTypeColor: {
-          p->_propertyType = mln::style::PluginLayerProperty::PropertyType::Color;
-          if (property.colorDefaultValue) {
-            CGFloat r, g, b, a;
-            [property.colorDefaultValue getRed:&r green:&g blue:&b alpha:&a];
-            p->_defaultColorValue = mln::Color(r, g, b, a);
-          }
-        } break;
-        default:
-          p->_propertyType = mln::style::PluginLayerProperty::PropertyType::Unknown;
-          break;
-      }
-      p->_propertyName = [property.propertyName UTF8String];
-      pm.addProperty(p);
-    }
-
-    // Set the render function
-    auto renderFunction = [weakPlugInLayer, weakMapView](mln::PaintParameters &paintParameters) {
-#if MLN_RENDER_BACKEND_METAL
-      const mln::mtl::RenderPass &renderPass =
-          static_cast<mln::mtl::RenderPass &>(*paintParameters.renderPass);
-      id encoder = (__bridge id)renderPass.getMetalEncoder().get();
-#else
-      id encoder = nil;
-#endif
-
-      MLNMapView *strongMapView = weakMapView;
-
-      const mln::TransformState &state = paintParameters.state;
-
-      MLNPluginLayerDrawingContext drawingContext;
-      drawingContext.size = CGSizeMake(state.getSize().width, state.getSize().height);
-      drawingContext.centerCoordinate =
-          CLLocationCoordinate2DMake(state.getLatLng().latitude(), state.getLatLng().longitude());
-      drawingContext.zoomLevel = state.getZoom();
-      drawingContext.direction = mln::util::rad2deg(-state.getBearing());
-      drawingContext.pitch = state.getPitch();
-      drawingContext.fieldOfView = state.getFieldOfView();
-      drawingContext.projectionMatrix = MLNMatrix4Make(paintParameters.transformParams.projMatrix);
-      drawingContext.nearClippedProjMatrix =
-          MLNMatrix4Make(paintParameters.transformParams.nearClippedProjMatrix);
-
-      // Call update with the scene state variables
-      [weakPlugInLayer onUpdateLayer:drawingContext];
-
-      // Call render
-      [weakPlugInLayer onRenderLayer:strongMapView renderEncoder:encoder];
-    };
-
-    // Set the lambdas
-    // auto pluginLayerImpl = (mln::style::PluginLayer::Impl *)pluginLayer->baseImpl.get();
-    pluginLayerImpl->setRenderFunction(renderFunction);
-
-    // Set the update properties function
-    pluginLayerImpl->setUpdatePropertiesFunction(
-        [weakPlugInLayer](const std::string &jsonProperties) {
-          // Use autorelease pools in lambdas
-          @autoreleasepool {
-            // Just wrap the string with NSData so it can be run through properties
-            NSData *d = [NSData dataWithBytesNoCopy:(void *)jsonProperties.data()
-                                             length:jsonProperties.length()
-                                       freeWhenDone:NO];
-            NSError *error = nil;
-            NSDictionary *properties = [NSJSONSerialization JSONObjectWithData:d
-                                                                       options:0
-                                                                         error:&error];
-            if (error) {
-              // TODO: What should we do here?
-            }
-            [weakPlugInLayer onUpdateLayerProperties:properties];
-          }
-        });
-  });
-
-  // TODO: Same question as above.  Do we ever want to have a core only layer type?
-  //       This could actually be something that we could set in the layer capabilities class
-  darwinLayerManager->addLayerType(std::move(factory));
-  // darwinLayerManager->addLayerTypeCoreOnly(std::move(factory));
+  // The C API's plugin ABI (mln/plugin/plugin_api.h) is not the core's
+  // PluginLayer interface that MLNPluginLayer subclasses implement
+  // (C_API_GAPS.md).
+  MLNLogError(@"Plugin layer type %@ is not supported: the C API has no plugin layers of this "
+              @"kind.",
+              NSStringFromClass(pluginLayerClass));
 }
 
+// The C API has no action journal (C_API_GAPS.md).
 - (NSArray<NSString *> *)getActionJournalLogFiles {
-  const auto &actionJournal = _mbglMap->getActionJournal();
-  if (!actionJournal) {
-    return nil;
-  }
-
-  const auto &files = actionJournal->getLogFiles();
-  NSMutableArray<NSString *> *objcFiles = [NSMutableArray new];
-
-  for (const auto &file : files) {
-    [objcFiles addObject:[NSString stringWithUTF8String:file.c_str()]];
-  }
-
-  return objcFiles;
+  return nil;
 }
 
 - (NSArray<NSString *> *)getActionJournalLog {
-  const auto &actionJournal = _mbglMap->getActionJournal();
-  if (!actionJournal) {
-    return nil;
-  }
-
-  const auto &log = actionJournal->getLog();
-  NSMutableArray<NSString *> *objcLog = [NSMutableArray new];
-
-  for (const auto &event : log) {
-    [objcLog addObject:[NSString stringWithUTF8String:event.c_str()]];
-  }
-
-  return objcLog;
+  return nil;
 }
 
 - (void)clearActionJournalLog {
-  const auto &actionJournal = _mbglMap->getActionJournal();
-  if (!actionJournal) {
-    return;
-  }
-
-  actionJournal->clearLog();
 }
 
+// The C API owns the Metal device, command buffers and render passes and
+// exposes none of them (C_API_GAPS.md).
 - (MLNBackendResource *)backendResource {
-  return _mbglView->getObject();
+  return [[MLNBackendResource alloc] initWithMTKView:nil
+                                              device:nil
+                                renderPassDescriptor:nil
+                                       commandBuffer:nil];
 }
 
 @end

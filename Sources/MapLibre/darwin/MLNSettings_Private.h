@@ -1,27 +1,24 @@
-#import <mln/util/default_style.hpp>
-#import <mln/util/tile_server_options.hpp>
+// Based on platform/darwin/src/MLNSettings_Private.h at ios-v7.0.0
+//
+// Classic kept an mbgl::TileServerOptions and passed it, with the API key, to
+// every file source. The C API's runtime takes neither (it always uses the
+// core's default, MapLibre tile server configuration), so the options are kept
+// as an MLNTileServerOptions value and only reported back (C_API_GAPS.md).
+
 #import "MLNSettings.h"
+#import "MLNTileServerOptions.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MLNSettings (Private)
 
-/// Returns the shared instance of the ``MLNSettings`` class.
 @property (class, nonatomic, readonly) MLNSettings *sharedSettings;
 
-/// The current global access token.
 @property (atomic, nullable) NSString *apiKey;
-
-/// internal access to tile server options
-@property (atomic, readwrite, nullable) mln::TileServerOptions *tileServerOptionsInternal;
-
-/// tile server base url
+@property (atomic, readwrite, nullable) MLNTileServerOptions *tileServerOptionsInternal;
 @property (atomic, readwrite, nullable) NSURL *apiBaseURL;
-
-/// Used for observing tiile server configuration changes
 @property (atomic, nullable) NSString *tileServerOptionsChangeToken;
 
-/// called internally to signal tile server options changed
 + (void)tileServerOptionsChanged;
 
 @end

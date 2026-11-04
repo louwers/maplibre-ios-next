@@ -1,20 +1,19 @@
+// Based on platform/ios/src/MLNMapView_Private.h at ios-v7.0.0
+
 #import "MLNAnnotationContainerView.h"
 #import "MLNMapView.h"
 #import "MLNTileOperation.h"
 #import "MLNUserLocationAnnotationView.h"
 
-namespace mln {
-class Map;
-class Renderer;
+#import <MaplibreNativeC/maplibre_native_c.h>
 
-namespace gfx {
-struct RenderingStats;
-}
-
-}  // namespace mln
-
+#ifdef __cplusplus
+#import "MLNCoreShim.h"
 class MLNMapViewImpl;
+#endif
+
 @class MLNSource;
+@class MLNFFIMap;
 
 /// Standard animation duration for UI elements.
 FOUNDATION_EXTERN const NSTimeInterval MLNAnimationDuration;
@@ -42,7 +41,7 @@ FOUNDATION_EXTERN MLN_EXPORT MLNExceptionName const _Nonnull MLNUnderlyingMapUna
 - (void)mapViewDidFailLoadingMapWithError:(nonnull NSError *)error;
 - (void)mapViewWillStartRenderingFrame;
 - (void)mapViewDidFinishRenderingFrameFullyRendered:(BOOL)fullyRendered
-                                     renderingStats:(const mln::gfx::RenderingStats &)stats;
+                                     renderingStats:(mln_rendering_stats)stats;
 - (void)mapViewWillStartRenderingMap;
 - (void)mapViewDidFinishRenderingMapFullyRendered:(BOOL)fullyRendered;
 - (void)mapViewDidBecomeIdle;
@@ -84,8 +83,13 @@ FOUNDATION_EXTERN MLN_EXPORT MLNExceptionName const _Nonnull MLNUnderlyingMapUna
 /// Synchronously render a frame of the map.
 - (BOOL)renderSync;
 
+#ifdef __cplusplus
 - (mln::Map &)mbglMap;
-- (nonnull mln::Renderer *)renderer;
+- (nonnull MLNMapViewImpl *)viewImpl;
+#endif
+
+/// The C API map, or nil once the view tore it down.
+- (nullable MLNFFIMap *)ffiMap;
 
 /** Returns whether the map view is currently loading or processing any assets required to render
  * the map */
@@ -93,9 +97,6 @@ FOUNDATION_EXTERN MLN_EXPORT MLNExceptionName const _Nonnull MLNUnderlyingMapUna
 
 /** Empties the in-memory tile cache. */
 - (void)didReceiveMemoryWarning;
-
-/** Returns an instance of MLNMapView implementation. Used for integration testing. */
-- (nonnull MLNMapViewImpl *)viewImpl;
 
 - (void)pauseRendering:(nonnull NSNotification *)notification;
 - (void)resumeRendering:(nonnull NSNotification *)notification;

@@ -1,12 +1,18 @@
+// Based on platform/darwin/src/NSDictionary+MLNAdditions.h at ios-v7.0.0
+
 #import <Foundation/Foundation.h>
 
-#import <mln/util/feature.hpp>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface NSDictionary (MLNAdditions)
 
-- (mln::PropertyMap)mgl_propertyMap;
+/**
+ The dictionary as a GeoJSON properties object, as classic's mln::PropertyMap
+ held it: nested dictionaries and arrays are converted recursively, and other
+ values as `-[NSExpression mgl_constantJSONValue]` converts constants.
+ */
+- (NSDictionary<NSString *, id> *)mgl_propertyMap;
 
 @end
 

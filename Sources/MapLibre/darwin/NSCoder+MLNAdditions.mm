@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSCoder+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSCoder+MLNAdditions.h"
 
 #import "NSArray+MLNAdditions.h"

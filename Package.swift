@@ -6,7 +6,7 @@
 import PackageDescription
 
 let package = Package(
-  name: "maplibre-ios-next",
+  name: "MapLibreNext",
   defaultLocalization: "en",
   platforms: [.iOS("15.5")],
   products: [
@@ -41,6 +41,7 @@ let package = Package(
         .headerSearchPath("vendor/SMCalloutView"),
         .headerSearchPath("vendor/polylabel"),
         .define("MLN_NEXT", to: "1"),
+        .define("MLN_RENDER_BACKEND_METAL", to: "1"),
       ],
       cxxSettings: [
         .headerSearchPath("include/MapLibre"),
@@ -52,6 +53,7 @@ let package = Package(
         .headerSearchPath("vendor/SMCalloutView"),
         .headerSearchPath("vendor/polylabel"),
         .define("MLN_NEXT", to: "1"),
+        .define("MLN_RENDER_BACKEND_METAL", to: "1"),
       ],
       linkerSettings: [
         .linkedFramework("CoreLocation"),

@@ -179,10 +179,9 @@ static NSString *MLNNextPendingIdentifier(void) {
   if (_pendingSourceIdentifier.length) {
     json[@"source"] = _pendingSourceIdentifier;
   }
+  NSString *before = otherLayer.identifier ?: [style mgl_topInsertionLayerIdentifier];
   NSString *message;
-  mln_status status = [style.mgl_map addStyleLayerJSON:json
-                                           belowLayer:otherLayer.identifier
-                                              message:&message];
+  mln_status status = [style.mgl_map addStyleLayerJSON:json belowLayer:before message:&message];
   if (status == MLN_STATUS_NOT_FOUND && _pendingSourceIdentifier.length &&
       ![style.mgl_map styleSourceWithIdentifier:_pendingSourceIdentifier]) {
     // Classic's core accepted a layer before its source. The C API refuses it,

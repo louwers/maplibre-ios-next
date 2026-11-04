@@ -37,6 +37,13 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (instancetype)initWithIdentifier:(NSString *)identifier style:(MLNStyle *)style;
 
+/**
+ Initializes a pending source of a concrete subclass, which is not part of any
+ style yet. Classic concrete subclasses called -initWithPendingSource: with a
+ core source here.
+ */
+- (instancetype)initWithPendingIdentifier:(NSString *)identifier;
+
 /// Whether the source was created by a concrete subclass (or came from a
 /// style), so it can be added to a style. Classic checked for a core source.
 @property (nonatomic, readonly) BOOL mgl_isConcrete;
@@ -69,6 +76,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Called after the source was added to a map, and after it was removed.
 - (void)mgl_didAttachToMap:(nullable MLNFFIMap *)map;
+
+/// Called before the source is removed from `map`, so a subclass can capture
+/// the configuration it needs to be added again.
+- (void)mgl_willDetachFromMap:(MLNFFIMap *)map;
 
 /**
  Adds the source that this object represents to the stylable's style.

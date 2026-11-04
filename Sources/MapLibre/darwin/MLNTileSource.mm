@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNTileSource.mm at ios-v7.0.0
+
 #import "MLNTileSource_Private.h"
 
 #import "MLNAttributionInfo_Private.h"
@@ -13,7 +15,9 @@
 #import <Cocoa/Cocoa.h>
 #endif
 
-#include <mln/util/tileset.hpp>
+#import "MLNFFIMap+Style.h"
+#import "MLNSource_Private.h"
+#import "MLNStyle_Private.h"
 
 const MLNTileSourceOption MLNTileSourceOptionMinimumZoomLevel =
     @"MLNTileSourceOptionMinimumZoomLevel";
@@ -28,7 +32,61 @@ const MLNTileSourceOption MLNTileSourceOptionAttributionInfos =
 const MLNTileSourceOption MLNTileSourceOptionTileCoordinateSystem =
     @"MLNTileSourceOptionTileCoordinateSystem";
 
-@implementation MLNTileSource
+@implementation MLNTileSource {
+  // The style-spec source object of a pending source.
+  NSDictionary *_sourceJSON;
+}
+
+- (instancetype)initWithPendingIdentifier:(NSString *)identifier sourceJSON:(NSDictionary *)json {
+  if (self = [super initWithPendingIdentifier:identifier]) {
+    _sourceJSON = [json copy];
+  }
+  return self;
+}
+
+- (NSDictionary *)mgl_sourceJSON {
+  return _sourceJSON;
+}
+
+- (void)mgl_willDetachFromMap:(MLNFFIMap *)map {
+  // A source of a loaded style has no configuration of its own; take the
+  // style's so it can be added again.
+  if (!_sourceJSON) {
+    MLNFFISourceInfo *info = [map styleSourceWithIdentifier:self.identifier];
+    if (info) {
+      _sourceJSON = MLNTileSourceJSONFromSourceInfo(info);
+    }
+  }
+}
+
+- (MLNFFISourceInfo *)mgl_sourceInfo {
+  MLNFFIMap *map = self.mgl_map;
+  return map ? [map styleSourceWithIdentifier:self.identifier] : nil;
+}
+
+- (NSURL *)mgl_configurationURL {
+  NSString *url;
+  if (self.mgl_style) {
+    url = self.mgl_sourceInfo.URL;
+  } else {
+    url = _sourceJSON[@"url"];
+  }
+  return url.length ? [NSURL URLWithString:url] : nil;
+}
+
+- (NSString *)mgl_attributionHTMLString {
+  if (self.mgl_style) {
+    MLNFFISourceInfo *info = self.mgl_sourceInfo;
+    if (!(info.fields & MLN_STYLE_SOURCE_INFO_TILE_JSON)) {
+      return nil;
+    }
+    return info.attribution ?: @"";
+  }
+  if (!_sourceJSON[@"tiles"]) {
+    return nil;
+  }
+  return _sourceJSON[@"attribution"] ?: @"";
+}
 
 - (NSURL *)configurationURL {
   [NSException raise:MLNAbstractClassException format:@"MLNTileSource is an abstract class"];
@@ -53,32 +111,34 @@ const MLNTileSourceOption MLNTileSourceOptionTileCoordinateSystem =
 
 @end
 
-mln::Tileset MLNTileSetFromTileURLTemplates(
-    NSArray<NSString *> *tileURLTemplates,
-    NSDictionary<MLNTileSourceOption, id> *_Nullable options) {
-  mln::Tileset tileSet;
+NSMutableDictionary *MLNTileSourceJSONFromTileURLTemplates(
+    NSArray<NSString *> *tileURLTemplates, NSDictionary<MLNTileSourceOption, id> *_Nullable options,
+    NSString *sourceType) {
+  NSMutableDictionary *tileSet = [NSMutableDictionary dictionary];
 
-  for (NSString *tileURLTemplate in tileURLTemplates) {
-    tileSet.tiles.push_back(tileURLTemplate.UTF8String);
-  }
+  tileSet[@"tiles"] = [tileURLTemplates copy];
 
   // set the minimum / maximum zoom range to the values specified by this class if they
   // were set. otherwise, use the core objects default values
+  NSInteger minimumZoom = 0;
+  NSInteger maximumZoom = 22;
   if (NSNumber *minimumZoomLevel = options[MLNTileSourceOptionMinimumZoomLevel]) {
     if (![minimumZoomLevel isKindOfClass:[NSNumber class]]) {
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNTileSourceOptionMinimumZoomLevel must be set to an NSNumber."];
     }
-    tileSet.zoomRange.min = minimumZoomLevel.integerValue;
+    minimumZoom = (uint8_t)minimumZoomLevel.integerValue;
+    tileSet[@"minzoom"] = @(minimumZoom);
   }
   if (NSNumber *maximumZoomLevel = options[MLNTileSourceOptionMaximumZoomLevel]) {
     if (![maximumZoomLevel isKindOfClass:[NSNumber class]]) {
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNTileSourceOptionMinimumZoomLevel must be set to an NSNumber."];
     }
-    tileSet.zoomRange.max = maximumZoomLevel.integerValue;
+    maximumZoom = (uint8_t)maximumZoomLevel.integerValue;
+    tileSet[@"maxzoom"] = @(maximumZoom);
   }
-  if (tileSet.zoomRange.min > tileSet.zoomRange.max) {
+  if (minimumZoom > maximumZoom) {
     [NSException raise:NSInvalidArgumentException
                 format:@"MLNTileSourceOptionMinimumZoomLevel must be less than "
                        @"MLNTileSourceOptionMaximumZoomLevel."];
@@ -91,7 +151,12 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
                   format:@"MLNTileSourceOptionCoordinateBounds must be set to an NSValue "
                          @"containing an MLNCoordinateBounds."];
     }
-    tileSet.bounds = MLNLatLngBoundsFromCoordinateBounds(coordinateBounds.MLNCoordinateBoundsValue);
+    mln_lat_lng_bounds bounds =
+        MLNLatLngBoundsFromCoordinateBounds(coordinateBounds.MLNCoordinateBoundsValue);
+    tileSet[@"bounds"] = @[
+      @(bounds.southwest.longitude), @(bounds.southwest.latitude), @(bounds.northeast.longitude),
+      @(bounds.northeast.latitude)
+    ];
   }
 
   if (NSString *attribution = options[MLNTileSourceOptionAttributionHTMLString]) {
@@ -99,7 +164,7 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNTileSourceOptionAttributionHTMLString must be set to a string."];
     }
-    tileSet.attribution = attribution.UTF8String;
+    tileSet[@"attribution"] = attribution;
   }
 
   if (NSArray *attributionInfos = options[MLNTileSourceOptionAttributionInfos]) {
@@ -125,7 +190,7 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
                                 documentAttributes:documentAttributes
                                              error:NULL];
     NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    tileSet.attribution = html.UTF8String;
+    tileSet[@"attribution"] = html ?: @"";
   }
 
   if (NSNumber *tileCoordinateSystemNumber = options[MLNTileSourceOptionTileCoordinateSystem]) {
@@ -138,10 +203,10 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
     [tileCoordinateSystemNumber getValue:&tileCoordinateSystem];
     switch (tileCoordinateSystem) {
       case MLNTileCoordinateSystemXYZ:
-        tileSet.scheme = mln::Tileset::Scheme::XYZ;
+        tileSet[@"scheme"] = @"xyz";
         break;
       case MLNTileCoordinateSystemTMS:
-        tileSet.scheme = mln::Tileset::Scheme::TMS;
+        tileSet[@"scheme"] = @"tms";
         break;
     }
   }
@@ -154,13 +219,16 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
     }
     MLNDEMEncoding encoding;
     [encodingNumber getValue:&encoding];
-    switch (encoding) {
-      case MLNDEMEncodingMapbox:
-        tileSet.rasterEncoding = mln::Tileset::RasterEncoding::Mapbox;
-        break;
-      case MLNDEMEncodingTerrarium:
-        tileSet.rasterEncoding = mln::Tileset::RasterEncoding::Terrarium;
-        break;
+    // Only raster-dem sources have this encoding; the core ignored it elsewhere.
+    if ([sourceType isEqualToString:@"raster-dem"]) {
+      switch (encoding) {
+        case MLNDEMEncodingMapbox:
+          tileSet[@"encoding"] = @"mapbox";
+          break;
+        case MLNDEMEncodingTerrarium:
+          tileSet[@"encoding"] = @"terrarium";
+          break;
+      }
     }
   }
 
@@ -173,15 +241,63 @@ mln::Tileset MLNTileSetFromTileURLTemplates(
     }
     MLNVectorTileSourceEncoding encoding;
     [encodingNumber getValue:&encoding];
-    switch (encoding) {
-      case MLNVectorTileSourceEncodingMapbox:
-        tileSet.vectorEncoding = mln::Tileset::VectorEncoding::Mapbox;
-        break;
-      case MLNVectorTileSourceEncodingMLT:
-        tileSet.vectorEncoding = mln::Tileset::VectorEncoding::MLT;
-        break;
+    // Only vector sources have this encoding; the core ignored it elsewhere.
+    if ([sourceType isEqualToString:@"vector"]) {
+      switch (encoding) {
+        case MLNVectorTileSourceEncodingMapbox:
+          tileSet[@"encoding"] = @"mvt";
+          break;
+        case MLNVectorTileSourceEncodingMLT:
+          tileSet[@"encoding"] = @"mlt";
+          break;
+      }
     }
   }
 
   return tileSet;
+}
+
+NSDictionary *MLNTileSourceJSONFromSourceInfo(MLNFFISourceInfo *info) {
+  NSMutableDictionary *json = [NSMutableDictionary dictionary];
+  switch (info.type) {
+    case MLN_STYLE_SOURCE_TYPE_VECTOR:
+      json[@"type"] = @"vector";
+      if (info.fields & MLN_STYLE_SOURCE_INFO_VECTOR_ENCODING) {
+        json[@"encoding"] = info.vectorEncoding == MLN_STYLE_VECTOR_TILE_ENCODING_MLT ? @"mlt" : @"mvt";
+      }
+      break;
+    case MLN_STYLE_SOURCE_TYPE_RASTER:
+      json[@"type"] = @"raster";
+      break;
+    case MLN_STYLE_SOURCE_TYPE_RASTER_DEM:
+      json[@"type"] = @"raster-dem";
+      if (info.fields & MLN_STYLE_SOURCE_INFO_RASTER_ENCODING) {
+        json[@"encoding"] =
+            info.rasterEncoding == MLN_STYLE_RASTER_DEM_ENCODING_TERRARIUM ? @"terrarium" : @"mapbox";
+      }
+      break;
+    default:
+      return @{};
+  }
+  if (info.URL.length) {
+    json[@"url"] = info.URL;
+  } else if (info.fields & MLN_STYLE_SOURCE_INFO_TILE_JSON) {
+    json[@"tiles"] = info.tileURLs;
+    json[@"minzoom"] = @(info.minimumZoom);
+    json[@"maxzoom"] = @(info.maximumZoom);
+    json[@"scheme"] = info.scheme == MLN_STYLE_TILE_SCHEME_TMS ? @"tms" : @"xyz";
+    if (info.attribution.length) {
+      json[@"attribution"] = info.attribution;
+    }
+    if (info.fields & MLN_STYLE_SOURCE_INFO_BOUNDS) {
+      json[@"bounds"] = @[
+        @(info.bounds.southwest.longitude), @(info.bounds.southwest.latitude),
+        @(info.bounds.northeast.longitude), @(info.bounds.northeast.latitude)
+      ];
+    }
+  }
+  if ((info.fields & MLN_STYLE_SOURCE_INFO_TILE_SIZE) && info.type != MLN_STYLE_SOURCE_TYPE_VECTOR) {
+    json[@"tileSize"] = @(info.tileSize);
+  }
+  return json;
 }

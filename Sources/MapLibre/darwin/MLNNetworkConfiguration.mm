@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNNetworkConfiguration.mm at ios-v7.0.0
+
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNNetworkConfiguration_Private.h"
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
@@ -6,11 +8,59 @@
 
 #import "MLNReachability.h"
 
+#import <MaplibreNativeC/maplibre_native_c.h>
+
+#import "MLNFFI.h"
+
+#include <vector>
+
+// The C API has no hook for the NSURLSession it downloads with. Its Apple build
+// does compile the core's Objective-C network bridge
+// (platform/darwin/core/native_apple_interface.m): the classes
+// MLNNativeNetworkManager and MLNInternalNetworkResponse, whose delegate its
+// HTTP file source asks for the session configuration, a custom session, and
+// request and response rewriting, and tells about downloads. Those classes are
+// not exported symbols, so they are looked up at run time; this SDK must not
+// define classes with these names. If a later C API drops them, only the
+// additional HTTP headers of the session configuration still apply, through the
+// runtime's HTTP header transform (C_API_GAPS.md).
+
+/// The class methods of MLNNativeNetworkManager this file uses.
+@protocol MLNFFINativeNetworkManagerClass <NSObject>
++ (id)sharedManager;
+@end
+
+/// The instance interface of MLNNativeNetworkManager this file uses.
+@protocol MLNFFINativeNetworkManager <NSObject>
+@property (nonatomic, weak) id delegate;
+@end
+
+/// The class methods of MLNInternalNetworkResponse this file uses.
+@protocol MLNFFIInternalNetworkResponseClass <NSObject>
++ (id)responseWithData:(NSData *)data urlResponse:(NSURLResponse *)response error:(NSError *)error;
+@end
+
+/// The instance interface of MLNInternalNetworkResponse this file uses.
+@protocol MLNFFIInternalNetworkResponse <NSObject>
+@property (retain, nullable) NSError *error;
+@property (retain, nullable) NSData *data;
+@property (retain, nullable) NSURLResponse *response;
+@end
+
+/// The C API's shared network manager, or nil if its build has none.
+static id<MLNFFINativeNetworkManager> MLNFFINativeNetworkManager(void) {
+  Class managerClass = NSClassFromString(@"MLNNativeNetworkManager");
+  if (![managerClass respondsToSelector:@selector(sharedManager)]) {
+    return nil;
+  }
+  return [(Class<MLNFFINativeNetworkManagerClass>)managerClass sharedManager];
+}
+
 static NSString *const MLNStartTime = @"start_time";
 static NSString *const MLNResourceType = @"resource_type";
 NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
 
-@interface MLNNetworkConfiguration () <MLNNativeNetworkDelegate>
+@interface MLNNetworkConfiguration ()
 
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *events;
 @property (nonatomic, weak) id<MLNNetworkConfigurationMetricsDelegate> metricsDelegate;
@@ -50,7 +100,65 @@ NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
 - (void)resetNativeNetworkManagerDelegate {
   // Tell core about our network integration. `delegate` here is not (yet)
   // intended to be set to nil, except for testing.
-  [MLNNativeNetworkManager sharedManager].delegate = self;
+  id<MLNFFINativeNetworkManager> manager = MLNFFINativeNetworkManager();
+  if (manager) {
+    manager.delegate = self;
+  } else {
+    // Asynchronously: this runs while the runtime is being created, and the
+    // header transform needs the runtime.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self mgl_applyAdditionalHeadersWithHeaderTransform];
+    });
+  }
+}
+
+/// Without the network bridge, sends the session configuration's additional
+/// HTTP headers through the runtime's header transform. The transform cannot
+/// set User-Agent and other headers the C API manages.
+- (void)mgl_applyAdditionalHeadersWithHeaderTransform {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    MLNLogWarning(@"The MapLibre Native C API has no network manager to configure; only additional "
+                  @"HTTP headers of the session configuration apply.");
+  });
+  NSDictionary *headers = self.sessionConfiguration.HTTPAdditionalHeaders;
+  NSMutableArray<NSString *> *names = [NSMutableArray array];
+  NSMutableArray<NSString *> *values = [NSMutableArray array];
+  for (id name in headers) {
+    if (![name isKindOfClass:[NSString class]] ||
+        [(NSString *)name caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) {
+      continue;
+    }
+    [names addObject:name];
+    [values addObject:[headers[name] description]];
+  }
+  if (!names.count) {
+    return;
+  }
+  std::vector<mln_http_header> cHeaders;
+  for (NSUInteger i = 0; i < names.count; i++) {
+    cHeaders.push_back({MLNFFIBufferView(names[i]), MLNFFIBufferView(values[i])});
+  }
+  mln_http_header_rule rule = {sizeof(mln_http_header_rule)};
+  rule.kinds = MLN_RESOURCE_KIND_FLAG_ALL;
+  rule.flags = MLN_URL_MATCH_GLOB;
+  rule.url = MLNFFIBufferView(@"*");
+  rule.headers = cHeaders.data();
+  rule.header_count = cHeaders.size();
+  mln_http_header_transform transform = {sizeof(mln_http_header_transform)};
+  transform.rules = &rule;
+  transform.rule_count = 1;
+  mln_runtime runtime = [MLNFFIRuntime sharedRuntime].handle;
+  NSString *message;
+  if ([[MLNFFIRuntime sharedRuntime]
+             call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+               return mln_runtime_set_http_header_transform(runtime, &transform, completion,
+                                                            diagnostic);
+             }
+          consume:nil
+          message:&message] != MLN_STATUS_OK) {
+    MLNLogError(@"Failed to set HTTP headers: %@", message);
+  }
 }
 
 + (NSURLSessionConfiguration *)defaultSessionConfiguration {
@@ -67,7 +175,7 @@ NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
 
 // MARK: - MLNNativeNetworkDelegate
 
-- (NSURLSession *)sessionForNetworkManager:(MLNNativeNetworkManager *)networkManager {
+- (NSURLSession *)sessionForNetworkManager:(id)networkManager {
   // Note: this method is NOT called on the main thread.
   NSURLSession *session;
   if ([self.delegate respondsToSelector:@selector(sessionForNetworkConfiguration:)]) {
@@ -96,18 +204,19 @@ NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
   return request;
 }
 
-- (MLNInternalNetworkResponse *)didReceiveResponse:(MLNInternalNetworkResponse *)response {
+- (id)didReceiveResponse:(id<MLNFFIInternalNetworkResponse>)response {
   if ([self.delegate respondsToSelector:@selector(didReceiveResponse:)]) {
     MLNNetworkResponse *tempResponse = [MLNNetworkResponse responseWithData:response.data
                                                                 urlResponse:response.response
                                                                       error:response.error];
     tempResponse = [self.delegate didReceiveResponse:tempResponse];
     if (tempResponse) {
-      MLNInternalNetworkResponse *internalResponse =
-          [MLNInternalNetworkResponse responseWithData:tempResponse.data
-                                           urlResponse:tempResponse.response
-                                                 error:tempResponse.error];
-      return internalResponse;
+      Class<MLNFFIInternalNetworkResponseClass> responseClass =
+          (Class<MLNFFIInternalNetworkResponseClass>)NSClassFromString(
+              @"MLNInternalNetworkResponse");
+      return [responseClass responseWithData:tempResponse.data
+                                 urlResponse:tempResponse.response
+                                       error:tempResponse.error];
     } else {
       return nil;
     }
@@ -241,11 +350,11 @@ NSString *const kMLNDownloadPerformanceEvent = @"mobile.performance_trace";
 @implementation MLNNetworkConfiguration (ForTesting)
 
 + (void)testing_clearNativeNetworkManagerDelegate {
-  [MLNNativeNetworkManager sharedManager].delegate = nil;
+  MLNFFINativeNetworkManager().delegate = nil;
 }
 
 + (id)testing_nativeNetworkManagerDelegate {
-  return [MLNNativeNetworkManager sharedManager].delegate;
+  return MLNFFINativeNetworkManager().delegate;
 }
 
 @end

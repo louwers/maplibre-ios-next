@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSExpression+MLNAdditions.mm at ios-v7.0.0
+
 #import "MLNFoundation_Private.h"
 #import "MLNGeometry_Private.h"
 #import "MLNShape_Private.h"
@@ -16,7 +18,9 @@
 
 #import <objc/runtime.h>
 
-#import <mln/style/expression/expression.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <string>
 
 const MLNExpressionInterpolationMode MLNExpressionInterpolationModeLinear = @"linear";
 const MLNExpressionInterpolationMode MLNExpressionInterpolationModeExponential = @"exponential";
@@ -279,40 +283,76 @@ const MLNExpressionInterpolationMode MLNExpressionInterpolationModeCubicBezier =
 
 @end
 
+/**
+ mln::Color::stringify() for color components: "rgba(r,g,b,a)" with components
+ unpremultiplied by alpha, formatted as util::toString(double) formats them
+ (shortest round-trip representation, without a trailing ".0").
+ */
+static NSString *MLNStringifyColor(MLNColorComponents color) {
+  double array[4];
+  if (color.a == 0) {
+    array[0] = array[1] = array[2] = array[3] = 0;
+  } else {
+    array[0] = color.r * 255 / color.a;
+    array[1] = color.g * 255 / color.a;
+    array[2] = color.b * 255 / color.a;
+    array[3] = floor(color.a * 100 + .5) / 100;  // round to 2 decimal places
+  }
+  NSMutableArray<NSString *> *components = [NSMutableArray arrayWithCapacity:4];
+  for (double component : array) {
+    // The shortest representation that reads back as the same double, as
+    // rapidjson's Writer::Double() writes it for values in this range.
+    char buffer[64];
+    for (int precision = 1; precision <= 17; precision++) {
+      snprintf(buffer, sizeof(buffer), "%.*g", precision, component);
+      if (strtod(buffer, nullptr) == component) {
+        break;
+      }
+    }
+    std::string text(buffer);
+    // rapidjson writes integral values with ".0", which toString() strips.
+    if (text.size() >= 3 && text.compare(text.size() - 2, 2, ".0") == 0) {
+      text.resize(text.size() - 2);
+    }
+    [components addObject:@(text.c_str())];
+  }
+  return [NSString stringWithFormat:@"rgba(%@)", [components componentsJoinedByString:@","]];
+}
+
 @implementation NSExpression (MLNPrivateAdditions)
 
-- (std::vector<mln::Value>)mgl_aggregateMBGLValue {
+- (NSArray *)mgl_aggregateJSONValue {
   if ([self.constantValue isKindOfClass:[NSArray class]] ||
       [self.constantValue isKindOfClass:[NSSet class]]) {
-    std::vector<mln::Value> convertedValues;
+    NSMutableArray *convertedValues = [NSMutableArray array];
     for (id value in self.constantValue) {
       NSExpression *expression = value;
       if (![expression isKindOfClass:[NSExpression class]]) {
         expression = [NSExpression expressionForConstantValue:expression];
       }
-      convertedValues.push_back(expression.mgl_constantMBGLValue);
+      [convertedValues addObject:expression.mgl_constantJSONValue];
     }
     return convertedValues;
   }
   [NSException raise:NSInvalidArgumentException
               format:@"Constant value expression must contain an array or set."];
-  return {};
+  return @[];
 }
 
-- (mln::Value)mgl_constantMBGLValue {
+- (id)mgl_constantJSONValue {
   id value = self.constantValue;
   if ([value isKindOfClass:NSString.class]) {
-    return {std::string([(NSString *)value UTF8String])};
+    return value;
   } else if ([value isKindOfClass:NSNumber.class]) {
     NSNumber *number = (NSNumber *)value;
     if ((strcmp([number objCType], @encode(char)) == 0) ||
         (strcmp([number objCType], @encode(BOOL)) == 0)) {
       // char: 32-bit boolean
       // BOOL: 64-bit boolean
-      return {(bool)number.boolValue};
+      return number.boolValue ? @YES : @NO;
     } else if (strcmp([number objCType], @encode(double)) == 0) {
       // Double values on all platforms are interpreted precisely.
-      return {(double)number.doubleValue};
+      return @(number.doubleValue);
     } else if (strcmp([number objCType], @encode(float)) == 0) {
       // Float values when taken as double introduce precision problems,
       // so warn the user to avoid them. This would require them to
@@ -326,107 +366,39 @@ const MLNExpressionInterpolationMode MLNExpressionInterpolationModeCubicBezier =
               @"when specifying arguments to predicate and expression format strings. "
               @"This will be logged only once.");
       });
-      return {(double)number.doubleValue};
+      return @(number.doubleValue);
     } else if ([number compare:@(0)] == NSOrderedDescending ||
                [number compare:@(0)] == NSOrderedSame) {
       // Positive integer or zero; use uint64_t per mln::Value definition.
       // We use unsigned long long here to avoid any truncation.
-      return {(uint64_t)number.unsignedLongLongValue};
+      return @(number.unsignedLongLongValue);
     } else if ([number compare:@(0)] == NSOrderedAscending) {
       // Negative integer; use int64_t per mln::Value definition.
       // We use long long here to avoid any truncation.
-      return {(int64_t)number.longLongValue};
+      return @(number.longLongValue);
     }
   } else if ([value isKindOfClass:[MLNColor class]]) {
-    auto hexString = [(MLNColor *)value mgl_colorForPremultipliedValue].stringify();
-    return {hexString};
+    return MLNStringifyColor([(MLNColor *)value mgl_colorForPremultipliedValue]);
   } else if (value && value != [NSNull null]) {
     [NSException raise:NSInvalidArgumentException
                 format:@"Can’t convert %s:%@ to mln::Value", [value objCType], value];
   }
-  return {};
+  return [NSNull null];
 }
 
-- (std::vector<mln::FeatureType>)mgl_aggregateFeatureType {
-  if ([self.constantValue isKindOfClass:[NSArray class]] ||
-      [self.constantValue isKindOfClass:[NSSet class]]) {
-    std::vector<mln::FeatureType> convertedValues;
-    for (id value in self.constantValue) {
-      NSExpression *expression = value;
-      if (![expression isKindOfClass:[NSExpression class]]) {
-        expression = [NSExpression expressionForConstantValue:expression];
-      }
-      convertedValues.push_back(expression.mgl_featureType);
-    }
-    return convertedValues;
-  }
-  [NSException raise:NSInvalidArgumentException
-              format:@"Constant value expression must contain an array or set."];
-  return {};
-}
+- (id)mgl_featureIdentifierJSONValue {
+  id value = self.mgl_constantJSONValue;
 
-- (mln::FeatureType)mgl_featureType {
-  id value = self.constantValue;
-  if ([value isKindOfClass:NSString.class]) {
-    if ([value isEqualToString:@"Point"]) {
-      return mln::FeatureType::Point;
-    }
-    if ([value isEqualToString:@"LineString"]) {
-      return mln::FeatureType::LineString;
-    }
-    if ([value isEqualToString:@"Polygon"]) {
-      return mln::FeatureType::Polygon;
-    }
-  } else if ([value isKindOfClass:NSNumber.class]) {
-    switch ([value integerValue]) {
-      case 1:
-        return mln::FeatureType::Point;
-      case 2:
-        return mln::FeatureType::LineString;
-      case 3:
-        return mln::FeatureType::Polygon;
-      default:
-        break;
-    }
+  // Strings and numbers identify features; mln::FeatureIdentifier has no
+  // boolean or null alternative.
+  if ([value isKindOfClass:[NSString class]]) {
+    return value;
   }
-  return mln::FeatureType::Unknown;
-}
-
-- (std::vector<mln::FeatureIdentifier>)mgl_aggregateFeatureIdentifier {
-  if ([self.constantValue isKindOfClass:[NSArray class]] ||
-      [self.constantValue isKindOfClass:[NSSet class]]) {
-    std::vector<mln::FeatureIdentifier> convertedValues;
-    for (id value in self.constantValue) {
-      NSExpression *expression = value;
-      if (![expression isKindOfClass:[NSExpression class]]) {
-        expression = [NSExpression expressionForConstantValue:expression];
-      }
-      convertedValues.push_back(expression.mgl_featureIdentifier);
-    }
-    return convertedValues;
-  }
-  [NSException raise:NSInvalidArgumentException
-              format:@"Constant value expression must contain an array or set."];
-  return {};
-}
-
-- (mln::FeatureIdentifier)mgl_featureIdentifier {
-  mln::Value mbglValue = self.mgl_constantMBGLValue;
-
-  if (mbglValue.is<std::string>()) {
-    return mbglValue.get<std::string>();
-  }
-  if (mbglValue.is<double>()) {
-    return mbglValue.get<double>();
-  }
-  if (mbglValue.is<uint64_t>()) {
-    return mbglValue.get<uint64_t>();
-  }
-  if (mbglValue.is<int64_t>()) {
-    return mbglValue.get<int64_t>();
+  if ([value isKindOfClass:[NSNumber class]] && CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID()) {
+    return value;
   }
 
-  return {};
+  return nil;
 }
 
 @end

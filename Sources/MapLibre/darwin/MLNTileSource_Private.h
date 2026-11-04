@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNTileSource_Private.h at ios-v7.0.0
+
 #import <CoreGraphics/CoreGraphics.h>
 
 #import "MLNFoundation.h"
@@ -5,11 +7,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-namespace mln {
-class Tileset;
-}
-
 @class MLNAttributionInfo;
+@class MLNFFISourceInfo;
 
 @interface MLNTileSource (Private)
 
@@ -31,11 +30,41 @@ class Tileset;
 - (NSArray<MLNAttributionInfo *> *)attributionInfosWithFontSize:(CGFloat)fontSize
                                                       linkColor:(nullable MLNColor *)linkColor;
 
+/**
+ Initializes a pending tile source with its style-spec source object. Classic
+ created a core source from a URL or an mln::Tileset here.
+ */
+- (instancetype)initWithPendingIdentifier:(NSString *)identifier sourceJSON:(NSDictionary *)json;
+
+/// The source as the style reports it while attached, else nil.
+@property (nonatomic, readonly, nullable) MLNFFISourceInfo *mgl_sourceInfo;
+
+/// The configuration URL the source was created with, as getURL() reported it.
+@property (nonatomic, readonly, nullable) NSURL *mgl_configurationURL;
+
+/// The tile set attribution, as getAttribution() reported it: nil until a tile
+/// set exists (a configuration URL loads it), empty if it has none.
+@property (nonatomic, readonly, nullable) NSString *mgl_attributionHTMLString;
+
 @end
 
+/**
+ The tile set part of a style-spec source object for tile URL templates and
+ options, as MLNTileSetFromTileURLTemplates() built an mln::Tileset: `tiles`,
+ `minzoom`, `maxzoom`, `bounds`, `attribution`, `scheme` and `encoding`.
+ `sourceType` is "vector", "raster" or "raster-dem" and selects which encoding
+ option applies.
+ */
 MLN_EXPORT
-mln::Tileset MLNTileSetFromTileURLTemplates(
-    NSArray<NSString *> *tileURLTemplates,
-    NSDictionary<MLNTileSourceOption, id> *_Nullable options);
+NSMutableDictionary *MLNTileSourceJSONFromTileURLTemplates(
+    NSArray<NSString *> *tileURLTemplates, NSDictionary<MLNTileSourceOption, id> *_Nullable options,
+    NSString *sourceType);
+
+/**
+ A style-spec source object that recreates a tile source the C API describes,
+ for adding a source of a loaded style again after it was removed.
+ */
+MLN_EXPORT
+NSDictionary *MLNTileSourceJSONFromSourceInfo(MLNFFISourceInfo *info);
 
 NS_ASSUME_NONNULL_END

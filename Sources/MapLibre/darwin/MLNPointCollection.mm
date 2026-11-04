@@ -1,15 +1,18 @@
+// Based on platform/darwin/src/MLNPointCollection.mm at ios-v7.0.0
+
 #import "MLNGeometry_Private.h"
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNPointCollection_Private.h"
+#import "MLNLatLngBounds.h"
 #import "NSArray+MLNAdditions.h"
 
-#import <mln/util/geojson.hpp>
-#import <mln/util/geometry.hpp>
+#include <optional>
+#include <vector>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @implementation MLNPointCollection {
-  std::optional<mln::LatLngBounds> _bounds;
+  std::optional<mln_lat_lng_bounds> _bounds;
   std::vector<CLLocationCoordinate2D> _coordinates;
 }
 
@@ -59,13 +62,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (MLNCoordinateBounds)overlayBounds {
   if (!_bounds) {
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
     for (auto coordinate : _coordinates) {
       if (!MLNLocationCoordinate2DIsValid(coordinate)) {
-        bounds = mln::LatLngBounds::empty();
+        bounds = MLNLatLngBoundsEmpty();
         break;
       }
-      bounds.extend(MLNLatLngFromLocationCoordinate2D(coordinate));
+      MLNLatLngBoundsExtend(bounds, MLNLatLngFromLocationCoordinate2D(coordinate));
     }
     _bounds = bounds;
   }
@@ -101,14 +104,12 @@ NS_ASSUME_NONNULL_BEGIN
   return MLNCoordinateBoundsIntersectsCoordinateBounds(self.overlayBounds, overlayBounds);
 }
 
-- (mln::Geometry<double>)geometryObject {
-  mln::MultiPoint<double> multiPoint;
-  multiPoint.reserve(self.pointCount);
+- (id)geometryObject {
+  NSMutableArray *coordinates = [[NSMutableArray alloc] initWithCapacity:self.pointCount];
   for (NSUInteger i = 0; i < self.pointCount; i++) {
-    multiPoint.push_back(
-        mln::Point<double>(self.coordinates[i].longitude, self.coordinates[i].latitude));
+    [coordinates addObject:@[ @(self.coordinates[i].longitude), @(self.coordinates[i].latitude) ]];
   }
-  return multiPoint;
+  return @{@"type" : @"MultiPoint", @"coordinates" : coordinates};
 }
 
 - (NSDictionary *)geoJSONDictionary {

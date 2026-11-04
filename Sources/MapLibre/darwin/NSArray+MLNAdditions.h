@@ -1,11 +1,18 @@
+// Based on platform/darwin/src/NSArray+MLNAdditions.h at ios-v7.0.0
+
 #import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
 
-#import <mln/util/feature.hpp>
+#include <vector>
 
 @interface NSArray (MLNAdditions)
 
-- (std::vector<mln::Value>)mgl_vector;
+/**
+ The array as a JSON array, as classic's std::vector<mln::Value> held it:
+ nested dictionaries and arrays are converted recursively, and other values as
+ `-[NSExpression mgl_constantJSONValue]` converts constants.
+ */
+- (NSArray *)mgl_vector;
 
 /** Returns a string resulting from inserting a separator between each attributed string in the
  * array */

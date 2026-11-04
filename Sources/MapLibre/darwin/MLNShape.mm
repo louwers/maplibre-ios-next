@@ -1,11 +1,12 @@
+// Based on platform/darwin/src/MLNShape.mm at ios-v7.0.0
+
 #import "MLNShape_Private.h"
 
 #import "MLNFeature_Private.h"
 
+#import "MLNGeoJSON.h"
 #import "MLNTypes.h"
 #import "NSString+MLNAdditions.h"
-
-#import <mln/util/geo.hpp>
 
 bool operator==(const CLLocationCoordinate2D lhs, const CLLocationCoordinate2D rhs) {
   return lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude;
@@ -24,34 +25,38 @@ bool operator==(const CLLocationCoordinate2D lhs, const CLLocationCoordinate2D r
     return nil;
   }
 
-  try {
-    const auto geojson = mapbox::geojson::parse(string.UTF8String);
-    return MLNShapeFromGeoJSON(geojson);
-  } catch (std::runtime_error &err) {
+  // mapbox::geojson::parse() read the string as UTF-8.
+  NSData *utf8Data = [string dataUsingEncoding:NSUTF8StringEncoding];
+  NSError *parseError;
+  id object = [NSJSONSerialization JSONObjectWithData:utf8Data
+                                              options:NSJSONReadingFragmentsAllowed
+                                                error:&parseError];
+  if (!object) {
     if (outError) {
+      NSString *reason = parseError.userInfo[NSDebugDescriptionErrorKey]
+                             ?: parseError.localizedDescription;
       *outError = [NSError errorWithDomain:MLNErrorDomain
                                       code:MLNErrorCodeUnknown
                                   userInfo:@{
-                                    NSLocalizedFailureReasonErrorKey : @(err.what()),
+                                    NSLocalizedFailureReasonErrorKey : reason,
                                   }];
     }
     return nil;
   }
+  return MLNShapeFromGeoJSONObject(object, outError);
 }
 
-- (mln::GeoJSON)geoJSONObject {
+- (id)geoJSONObject {
   return self.geometryObject;
 }
 
-- (mln::Geometry<double>)geometryObject {
+- (id)geometryObject {
   [NSException raise:MLNAbstractClassException format:@"MLNShape is an abstract class"];
-  return mln::Point<double>();
+  return nil;
 }
 
 - (NSData *)geoJSONDataUsingEncoding:(NSStringEncoding)encoding {
-  auto geometry = self.geoJSONObject;
-  NSString *string = @(mapbox::geojson::stringify(geometry).c_str());
-  return [string dataUsingEncoding:NSUTF8StringEncoding];
+  return [MLNGeoJSONStringFromShape(self) dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 + (BOOL)supportsSecureCoding {

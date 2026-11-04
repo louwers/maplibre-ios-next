@@ -1,63 +1,68 @@
+// Based on platform/darwin/src/MLNActionJournalOptions.mm at ios-v7.0.0
+//
+// mbgl::util::ActionJournalOptions held these values; its defaults
+// (include/mln/util/action_journal_options.hpp) are reproduced here.
+
 #import "MLNActionJournalOptions.h"
-#import <mln/util/action_journal_options.hpp>
 
 @implementation MLNActionJournalOptions {
-  std::unique_ptr<mln::util::ActionJournalOptions> _actionJournalOptionsInternal;
+  BOOL _enabled;
+  NSString *_path;
+  NSInteger _logFileSize;
+  NSInteger _logFileCount;
+  NSInteger _renderingStatsReportInterval;
 }
 
 - (instancetype)init {
   if (self = [super init]) {
-    _actionJournalOptionsInternal = std::make_unique<mln::util::ActionJournalOptions>();
-
+    _enabled = NO;
+    _logFileSize = 1024 * 1024;
+    _logFileCount = 5;
+    _renderingStatsReportInterval = 60;
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    _actionJournalOptionsInternal->withPath(
-        [paths.firstObject stringByAppendingPathComponent:@""].UTF8String);
+    _path = [paths.firstObject stringByAppendingPathComponent:@""] ?: @"";
   }
   return self;
 }
 
-- (mln::util::ActionJournalOptions)getCoreOptions {
-  return *_actionJournalOptionsInternal;
-}
-
 - (void)setEnabled:(BOOL)value {
-  _actionJournalOptionsInternal->enable(value);
+  _enabled = value;
 }
 
 - (BOOL)enabled {
-  return _actionJournalOptionsInternal->enabled();
+  return _enabled;
 }
 
 - (void)setPath:(NSString *)value {
-  _actionJournalOptionsInternal->withPath(value.UTF8String);
+  _path = [value copy] ?: @"";
 }
 
 - (NSString *)path {
-  return [NSString stringWithUTF8String:_actionJournalOptionsInternal->path().c_str()];
+  return _path;
 }
 
 - (void)setLogFileSize:(NSInteger)value {
-  _actionJournalOptionsInternal->withLogFileSize(static_cast<uint32_t>(value));
+  _logFileSize = static_cast<uint32_t>(value);
 }
 
 - (NSInteger)logFileSize {
-  return _actionJournalOptionsInternal->logFileSize();
+  return _logFileSize;
 }
 
 - (void)setLogFileCount:(NSInteger)value {
-  _actionJournalOptionsInternal->withLogFileCount(static_cast<uint32_t>(value));
+  _logFileCount = static_cast<uint32_t>(value);
 }
 
 - (NSInteger)logFileCount {
-  return _actionJournalOptionsInternal->logFileCount();
+  return _logFileCount;
 }
 
 - (void)setRenderingStatsReportInterval:(NSInteger)value {
-  _actionJournalOptionsInternal->withRenderingStatsReportInterval(static_cast<uint32_t>(value));
+  _renderingStatsReportInterval = static_cast<uint32_t>(value);
 }
 
 - (NSInteger)renderingStatsReportInterval {
-  return _actionJournalOptionsInternal->renderingStatsReportInterval();
+  return _renderingStatsReportInterval;
 }
 
 @end

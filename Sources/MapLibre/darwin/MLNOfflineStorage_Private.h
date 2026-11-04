@@ -1,32 +1,19 @@
-#import "MLNOfflineStorage.h"
+// Based on platform/darwin/src/MLNOfflineStorage_Private.h at ios-v7.0.0
+//
+// Classic exposed the shared mbgl file sources here. The C API's runtime
+// (MLNFFIRuntime) takes their place; the offline storage configures its
+// database path before the runtime opens it.
 
 #import "MLNOfflinePack.h"
-
-#include <mln/storage/database_file_source.hpp>
-#include <mln/storage/online_file_source.hpp>
-
-#include "MLNSettings_Private.h"
-
-#include <memory>
+#import "MLNOfflineStorage.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MLNOfflineStorage (Private)
 
-/**
- The shared database file source object owned by the shared offline storage object.
- */
-@property (nonatomic) std::shared_ptr<mln::DatabaseFileSource> mbglDatabaseFileSource;
-
-/**
- The shared online file source object owned by the shared offline storage object.
- */
-@property (nonatomic) std::shared_ptr<mln::FileSource> mbglOnlineFileSource;
-
-/**
- The shared resource loader file source object owned by the shared offline storage object.
- */
-@property (nonatomic) std::shared_ptr<mln::FileSource> mbglFileSource;
+/// The database path the runtime opens, as `databasePath` reports it, without
+/// creating the shared storage.
++ (NSString *)mgl_databasePath;
 
 - (void)getPacksWithCompletionHandler:(void (^)(NSArray<MLNOfflinePack *> *packs,
                                                 NSError *_Nullable error))completion;

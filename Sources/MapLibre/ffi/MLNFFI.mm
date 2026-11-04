@@ -265,6 +265,7 @@ static void MLNFFIRuntimeEventCallback(void *userData, const mln_event_batch_vie
 
 static NSString *MLNFFIConfiguredCachePath;
 static BOOL MLNFFICachePathConfigured;
+static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
 
 @implementation MLNFFIRuntime
 
@@ -275,6 +276,10 @@ static BOOL MLNFFICachePathConfigured;
 
 + (NSString *)cachePath {
   return MLNFFIConfiguredCachePath;
+}
+
++ (void)setDefaultCachePathProvider:(NSString *_Nullable (^)(void))provider {
+  MLNFFIDefaultCachePathProvider = [provider copy];
 }
 
 + (instancetype)sharedRuntime {
@@ -293,8 +298,14 @@ static BOOL MLNFFICachePathConfigured;
     mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
 
     NSString *cachePath = MLNFFIConfiguredCachePath;
+    if (!MLNFFICachePathConfigured && MLNFFIDefaultCachePathProvider) {
+      cachePath = MLNFFIDefaultCachePathProvider();
+    }
+    // Classic resolved asset:// URLs against the main bundle's resources.
+    NSString *assetPath = [NSBundle mainBundle].resourceURL.path;
     mln_runtime_options options = {sizeof(mln_runtime_options)};
     options.cache_path = MLNFFIBufferView(cachePath);
+    options.asset_path = MLNFFIBufferView(assetPath);
     if (mln_runtime_create(&options, &_handle, &diagnostic) != MLN_STATUS_OK) {
       [NSException raise:NSInternalInconsistencyException
                   format:@"Failed to create the MapLibre Native runtime: %s", diagnostic.message];

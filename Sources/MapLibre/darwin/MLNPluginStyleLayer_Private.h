@@ -1,25 +1,24 @@
+// Based on platform/darwin/src/MLNPluginStyleLayer_Private.h at ios-v7.0.0
+//
+// Classic registered a peer factory for each plugin layer type with the core.
+// The C API's plugin interface (plugin.h) is a different, C-level ABI, so
+// MLNPluginLayer subclasses cannot be registered (C_API_GAPS.md).
+
 #pragma once
 
-#include "MLNStyleLayer_Private.h"
+#import "MLNPluginStyleLayer.h"
+#import "MLNStyleLayer_Private.h"
 
-#include <mln/plugin/plugin_layer_factory.hpp>
+NS_ASSUME_NONNULL_BEGIN
 
-namespace mln {
+@class MLNPluginLayer;
 
-class PluginLayerPeerFactory : public LayerPeerFactory, public mln::PluginLayerFactory {
-public:
-    PluginLayerPeerFactory(std::string& layerType,
-                           mln::style::LayerTypeInfo::Source source,
-                           mln::style::LayerTypeInfo::Pass3D pass3D,
-                           mln::style::LayerTypeInfo::Layout layout,
-                           mln::style::LayerTypeInfo::FadingTiles fadingTiles,
-                           mln::style::LayerTypeInfo::CrossTileIndex crossTileIndex,
-                           mln::style::LayerTypeInfo::TileKind tileKind)
-        : mln::PluginLayerFactory(layerType, source, pass3D, layout, fadingTiles, crossTileIndex, tileKind) {}
+@interface MLNPluginStyleLayer (Private)
 
-    // LayerPeerFactory overrides.
-    LayerFactory* getCoreLayerFactory() final { return this; }
-    virtual MLNStyleLayer* createPeer(style::Layer*) final;
-};
+/// The plugin layer object for this style layer; classic kept it in the core
+/// layer's platform reference.
+@property (nonatomic, nullable) MLNPluginLayer *mgl_pluginLayer;
 
-} // namespace mln
+@end
+
+NS_ASSUME_NONNULL_END

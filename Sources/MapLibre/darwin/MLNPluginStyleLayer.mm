@@ -1,28 +1,26 @@
+// Based on platform/darwin/src/MLNPluginStyleLayer.mm at ios-v7.0.0
+
 #import "MLNPluginStyleLayer.h"
-#import <mln/plugin/plugin_layer.hpp>
-#import <mln/plugin/plugin_layer_impl.hpp>
 #import "MLNPluginLayer.h"
 #import "MLNPluginStyleLayer_Private.h"
 
-@implementation MLNPluginStyleLayer
+@implementation MLNPluginStyleLayer {
+  MLNPluginLayer *_pluginLayer;
+}
 
 - (void)getStats {
-  mln::style::PluginLayer *l = (mln::style::PluginLayer *)self.rawLayer;
-  auto pl = l->impl();
 }
 
 - (MLNPluginLayer *)pluginLayer {
-  mln::style::PluginLayer *l = (mln::style::PluginLayer *)self.rawLayer;
-  if (l->_platformReference) {
-    MLNPluginLayer *pl = (__bridge MLNPluginLayer *)l->_platformReference;
-    return pl;
-  }
+  return _pluginLayer;
+}
 
-  return nil;
+- (MLNPluginLayer *)mgl_pluginLayer {
+  return _pluginLayer;
+}
+
+- (void)setMgl_pluginLayer:(MLNPluginLayer *)pluginLayer {
+  _pluginLayer = pluginLayer;
 }
 
 @end
-
-MLNStyleLayer *mln::PluginLayerPeerFactory::createPeer(style::Layer *rawLayer) {
-  return [[MLNPluginStyleLayer alloc] initWithRawLayer:rawLayer];
-}

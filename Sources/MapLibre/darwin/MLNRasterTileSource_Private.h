@@ -1,25 +1,14 @@
+// Based on platform/darwin/src/MLNRasterTileSource_Private.h at ios-v7.0.0
+
 #import "MLNRasterTileSource.h"
-
-#include <memory>
-#include <mln/util/variant.hpp>
-
-namespace mln {
-class Tileset;
-namespace style {
-class RasterSource;
-}
-}  // namespace mln
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface MLNRasterTileSource (Private)
 
-@property (nonatomic, readonly, nullable) mln::style::RasterSource *rawSource;
-
-- (std::unique_ptr<mln::style::RasterSource>)
-    pendingSourceWithIdentifier:(NSString *)identifier
-                   urlOrTileset:(mln::variant<std::string, mln::Tileset>)urlOrTileset
-                       tileSize:(uint16_t)tileSize;
+/// The style-spec source type: "raster", or "raster-dem" for MLNRasterDEMSource.
+/// Classic overrode -pendingSourceWithIdentifier:urlOrTileset:tileSize: instead.
+@property (class, nonatomic, readonly) NSString *mgl_sourceType;
 
 @end
 

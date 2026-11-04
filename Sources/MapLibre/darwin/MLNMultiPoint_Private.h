@@ -6,6 +6,7 @@
 
 #import "MLNGeometry.h"
 #import "MLNMultiPoint.h"
+#import "MLNTypes.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreLocation/CoreLocation.h>

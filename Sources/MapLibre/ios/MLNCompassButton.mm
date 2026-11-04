@@ -1,3 +1,5 @@
+// Based on platform/ios/src/MLNCompassButton.mm at ios-v7.0.0
+
 #import "MLNCompassButton_Private.h"
 #import "MLNCompassDirectionFormatter.h"
 
@@ -7,7 +9,7 @@
 #import "NSBundle+MLNAdditions.h"
 #import "UIImage+MLNAdditions.h"
 
-#include <mln/math/wrap.hpp>
+#import "MLNCoreGeometry.h"
 
 @interface MLNCompassButton ()
 
@@ -98,7 +100,7 @@
 
 - (void)updateCompassAnimated:(BOOL)animated {
   CLLocationDirection direction = self.mapView.direction;
-  CLLocationDirection plateDirection = mln::util::wrap(-direction, 0., 360.);
+  CLLocationDirection plateDirection = MLNCoreWrap(-direction, 0., 360.);
   self.transform = CGAffineTransformMakeRotation(MLNRadiansFromDegrees(plateDirection));
 
   self.isAccessibilityElement = direction > 0;

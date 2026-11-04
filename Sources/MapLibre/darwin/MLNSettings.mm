@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNSettings.mm at ios-v7.0.0
+
 #import "MLNSettings_Private.h"
 #import "NSBundle+MLNAdditions.h"
 
@@ -8,10 +10,134 @@
 @interface MLNSettings ()
 
 @property (atomic) NSString *apiKey;
-@property (atomic) mln::TileServerOptions *tileServerOptionsInternal;
+@property (atomic) MLNTileServerOptions *tileServerOptionsInternal;
 @property (atomic) NSString *tileServerOptionsChangeToken;
 
 @end
+
+// The core's tile server configurations (src/mln/util/tile_server_options.cpp
+// at ios-v7.0.0), as values.
+
+static MLNDefaultStyle *MLNDefaultStyleMake(NSString *url, NSString *name, int version) {
+  MLNDefaultStyle *style = [[MLNDefaultStyle alloc] init];
+  style.url = [NSURL URLWithString:url];
+  style.name = name;
+  style.version = version;
+  return style;
+}
+
+static MLNTileServerOptions *MLNTileServerOptionsMake(
+    NSString *baseURL, NSString *uriSchemeAlias, NSString *apiKeyParameterName,
+    NSArray<NSString *> *source, NSArray<NSString *> *style, NSArray<NSString *> *sprites,
+    NSArray<NSString *> *glyphs, NSArray<NSString *> *tile, NSArray<MLNDefaultStyle *> *defaultStyles,
+    NSString *defaultStyleName) {
+  // Each template array holds template, domain name, and optionally a version prefix.
+  MLNTileServerOptions *options = [[MLNTileServerOptions alloc] init];
+  options.baseURL = baseURL;
+  options.uriSchemeAlias = uriSchemeAlias;
+  options.apiKeyParameterName = apiKeyParameterName;
+  options.sourceTemplate = source[0];
+  options.sourceDomainName = source[1];
+  options.sourceVersionPrefix = source.count > 2 ? source[2] : nil;
+  options.styleTemplate = style[0];
+  options.styleDomainName = style[1];
+  options.styleVersionPrefix = style.count > 2 ? style[2] : nil;
+  options.spritesTemplate = sprites[0];
+  options.spritesDomainName = sprites[1];
+  options.spritesVersionPrefix = sprites.count > 2 ? sprites[2] : nil;
+  options.glyphsTemplate = glyphs[0];
+  options.glyphsDomainName = glyphs[1];
+  options.glyphsVersionPrefix = glyphs.count > 2 ? glyphs[2] : nil;
+  options.tileTemplate = tile[0];
+  options.tileDomainName = tile[1];
+  options.tileVersionPrefix = tile.count > 2 ? tile[2] : nil;
+  options.defaultStyles = defaultStyles;
+  for (MLNDefaultStyle *defaultStyle in defaultStyles) {
+    if ([defaultStyle.name isEqualToString:defaultStyleName]) {
+      options.defaultStyle = defaultStyle;
+    }
+  }
+  return options;
+}
+
+static MLNTileServerOptions *MLNMapLibreTileServerConfiguration(void) {
+  return MLNTileServerOptionsMake(
+      @"https://demotiles.maplibre.org", @"maplibre", @"", @[ @"/tiles/{domain}.json", @"" ],
+      @[ @"{path}.json", @"maps" ], @[ @"/{path}/sprite{scale}.{format}", @"" ],
+      @[ @"/font/{fontstack}/{start}-{end}.pbf", @"fonts" ], @[ @"/{path}", @"tiles" ],
+      @[ MLNDefaultStyleMake(@"maplibre://maps/style", @"Basic", 1) ], @"Basic");
+}
+
+static MLNTileServerOptions *MLNMapboxTileServerConfiguration(void) {
+  return MLNTileServerOptionsMake(
+      @"https://api.mapbox.com", @"mapbox", @"access_token", @[ @"/{domain}.json", @"", @"/v4" ],
+      @[ @"/styles/v1{path}", @"styles" ],
+      @[ @"/styles/v1{directory}{filename}/sprite{extension}", @"sprites" ],
+      @[ @"/fonts/v1{path}", @"fonts" ], @[ @"{path}", @"tiles", @"/v4" ], @[
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/streets-v11", @"Streets", 11),
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/outdoors-v11", @"Outdoors", 11),
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/light-v10", @"Light", 10),
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/dark-v10", @"Dark", 10),
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/satellite-v9", @"Satellite", 9),
+        MLNDefaultStyleMake(@"mapbox://styles/mapbox/satellite-streets-v11", @"Satellite Streets",
+                            11)
+      ],
+      @"Streets");
+}
+
+static MLNTileServerOptions *MLNMapTilerTileServerConfiguration(void) {
+  return MLNTileServerOptionsMake(
+      @"https://api.maptiler.com", @"maptiler", @"key", @[ @"/tiles{path}/tiles.json", @"sources" ],
+      @[ @"/maps{path}/style.json", @"maps" ], @[ @"/maps{path}", @"sprites" ],
+      @[ @"/fonts{path}", @"fonts" ], @[ @"{path}", @"tiles" ], @[
+        MLNDefaultStyleMake(@"maptiler://maps/streets", @"Streets", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/outdoor", @"Outdoor", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/basic", @"Basic", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/bright", @"Bright", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/pastel", @"Pastel", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/hybrid", @"Satellite Hybrid", 1),
+        MLNDefaultStyleMake(@"maptiler://maps/topo", @"Satellite Topo", 1)
+      ],
+      @"Streets");
+}
+
+static MLNDefaultStyle *MLNDefaultStyleCopy(MLNDefaultStyle *style) {
+  return MLNDefaultStyleMake(style.url.absoluteString, style.name, style.version);
+}
+
+/// A deep copy, as mln::TileServerOptions::clone() made.
+static MLNTileServerOptions *MLNTileServerOptionsCopy(MLNTileServerOptions *options) {
+  MLNTileServerOptions *copy = [[MLNTileServerOptions alloc] init];
+  copy.baseURL = options.baseURL;
+  copy.uriSchemeAlias = options.uriSchemeAlias;
+  copy.apiKeyParameterName = options.apiKeyParameterName;
+  copy.sourceTemplate = options.sourceTemplate;
+  copy.sourceDomainName = options.sourceDomainName;
+  copy.sourceVersionPrefix = options.sourceVersionPrefix;
+  copy.styleTemplate = options.styleTemplate;
+  copy.styleDomainName = options.styleDomainName;
+  copy.styleVersionPrefix = options.styleVersionPrefix;
+  copy.spritesTemplate = options.spritesTemplate;
+  copy.spritesDomainName = options.spritesDomainName;
+  copy.spritesVersionPrefix = options.spritesVersionPrefix;
+  copy.glyphsTemplate = options.glyphsTemplate;
+  copy.glyphsDomainName = options.glyphsDomainName;
+  copy.glyphsVersionPrefix = options.glyphsVersionPrefix;
+  copy.tileTemplate = options.tileTemplate;
+  copy.tileDomainName = options.tileDomainName;
+  copy.tileVersionPrefix = options.tileVersionPrefix;
+  NSMutableArray *styles = [NSMutableArray array];
+  for (MLNDefaultStyle *style in options.defaultStyles) {
+    MLNDefaultStyle *styleCopy = MLNDefaultStyleCopy(style);
+    [styles addObject:styleCopy];
+    if (style == options.defaultStyle ||
+        (options.defaultStyle && [style.name isEqualToString:options.defaultStyle.name])) {
+      copy.defaultStyle = styleCopy;
+    }
+  }
+  copy.defaultStyles = styles;
+  return copy;
+}
 
 @implementation MLNSettings
 
@@ -19,8 +145,7 @@
 
 - (instancetype)init {
   if (self = [super init]) {
-    self.tileServerOptionsInternal =
-        new mln::TileServerOptions(mln::TileServerOptions::DefaultConfiguration());
+    self.tileServerOptionsInternal = MLNMapLibreTileServerConfiguration();
   }
   return self;
 }
@@ -80,29 +205,22 @@
 }
 
 + (void)setAPIBaseURL:(NSURL *)apiBaseURL {
-  auto tileServerOptions = [MLNSettings sharedSettings].tileServerOptionsInternal;
-  NSString *baseUrlNSStr = apiBaseURL.absoluteString;
-  auto baseUrl = std::string([baseUrlNSStr UTF8String]);
-
-  [MLNSettings sharedSettings].tileServerOptionsInternal = &tileServerOptions->withBaseURL(baseUrl);
+  [MLNSettings sharedSettings].tileServerOptionsInternal.baseURL = apiBaseURL.absoluteString ?: @"";
 }
 
 + (NSURL *)apiBaseURL {
-  auto baseUrl = [MLNSettings sharedSettings].tileServerOptionsInternal->baseURL();
-  NSString *baseUrlNSStr = [NSString stringWithUTF8String:baseUrl.c_str()];
+  NSString *baseUrlNSStr = [MLNSettings sharedSettings].tileServerOptionsInternal.baseURL;
   NSURL *url = [NSURL URLWithString:baseUrlNSStr];
   return url;
 }
 
-+ (void)setTileServerOptionsInternal:(mln::TileServerOptions)options {
-  [MLNSettings sharedSettings].tileServerOptionsInternal = new mln::TileServerOptions();
-  *[MLNSettings sharedSettings].tileServerOptionsInternal = options.clone();
++ (void)setTileServerOptionsInternal:(MLNTileServerOptions *)options {
+  [MLNSettings sharedSettings].tileServerOptionsInternal = MLNTileServerOptionsCopy(options);
   [self tileServerOptionsChanged];
 }
 
-+ (mln::TileServerOptions)tileServerOptionsInternal {
-  auto options = [MLNSettings sharedSettings];
-  return options.tileServerOptionsInternal->clone();
++ (MLNTileServerOptions *)tileServerOptionsInternal {
+  return MLNTileServerOptionsCopy([MLNSettings sharedSettings].tileServerOptionsInternal);
 }
 
 + (void)tileServerOptionsChanged {
@@ -112,135 +230,54 @@
 + (void)useWellKnownTileServer:(MLNWellKnownTileServer)tileServer {
   switch (tileServer) {
     case MLNMapTiler:
-      [MLNSettings setTileServerOptionsInternal:mln::TileServerOptions::MapTilerConfiguration()];
+      [MLNSettings setTileServerOptionsInternal:MLNMapTilerTileServerConfiguration()];
       break;
     case MLNMapLibre:
-      [MLNSettings setTileServerOptionsInternal:mln::TileServerOptions::MapLibreConfiguration()];
+      [MLNSettings setTileServerOptionsInternal:MLNMapLibreTileServerConfiguration()];
       break;
     case MLNMapbox:
-      [MLNSettings setTileServerOptionsInternal:mln::TileServerOptions::MapboxConfiguration()];
+      [MLNSettings setTileServerOptionsInternal:MLNMapboxTileServerConfiguration()];
       break;
     default:
-      [MLNSettings setTileServerOptionsInternal:mln::TileServerOptions::DefaultConfiguration()];
+      [MLNSettings setTileServerOptionsInternal:MLNMapLibreTileServerConfiguration()];
   }
 }
 
 + (void)setTileServerOptions:(MLNTileServerOptions *)options {
-  auto opts = mln::TileServerOptions()
-                  .withBaseURL(std::string([options.baseURL UTF8String]))
-                  .withUriSchemeAlias(std::string([options.uriSchemeAlias UTF8String]))
-                  .withApiKeyParameterName(std::string([options.apiKeyParameterName UTF8String]));
-
-  opts.withSourceTemplate(std::string([options.sourceTemplate UTF8String]),
-                          std::string([options.sourceDomainName UTF8String]),
-                          options.sourceVersionPrefix
-                              ? std::string([options.sourceVersionPrefix UTF8String])
-                              : std::optional<std::string>{});
-
-  opts.withStyleTemplate(std::string([options.styleTemplate UTF8String]),
-                         std::string([options.styleDomainName UTF8String]),
-                         options.styleVersionPrefix
-                             ? std::string([options.styleVersionPrefix UTF8String])
-                             : std::optional<std::string>{});
-
-  opts.withSpritesTemplate(std::string([options.spritesTemplate UTF8String]),
-                           std::string([options.spritesDomainName UTF8String]),
-                           options.spritesVersionPrefix
-                               ? std::string([options.spritesVersionPrefix UTF8String])
-                               : std::optional<std::string>{});
-
-  opts.withGlyphsTemplate(std::string([options.glyphsTemplate UTF8String]),
-                          std::string([options.glyphsDomainName UTF8String]),
-                          options.glyphsVersionPrefix
-                              ? std::string([options.glyphsVersionPrefix UTF8String])
-                              : std::optional<std::string>{});
-
-  opts.withTileTemplate(std::string([options.tileTemplate UTF8String]),
-                        std::string([options.tileDomainName UTF8String]),
-                        options.tileVersionPrefix
-                            ? std::string([options.tileVersionPrefix UTF8String])
-                            : std::optional<std::string>{});
-
-  std::vector<mln::util::DefaultStyle> defaultStyles;
+  // As classic, which built new mbgl::TileServerOptions: every template and
+  // name is required (UTF8String of nil crashed there), the default styles are
+  // copied, and the default style is looked up by name.
+  MLNTileServerOptions *opts = MLNTileServerOptionsCopy(options);
+  NSMutableArray<MLNDefaultStyle *> *defaultStyles = [NSMutableArray array];
   if (options.defaultStyles) {
     for (MLNDefaultStyle *objCStyle in options.defaultStyles) {
-      mln::util::DefaultStyle cppStyle(std::string([objCStyle.url.absoluteString UTF8String]),
-                                       std::string([objCStyle.name UTF8String]), objCStyle.version);
-      defaultStyles.push_back(cppStyle);
+      [defaultStyles addObject:MLNDefaultStyleCopy(objCStyle)];
     }
   }
-  opts.withDefaultStyles(defaultStyles);
-  opts.withDefaultStyle(std::string([options.defaultStyle.name UTF8String]));
-
+  opts.defaultStyles = defaultStyles;
+  MLNDefaultStyle *defaultStyle;
+  for (MLNDefaultStyle *style in defaultStyles) {
+    if ([style.name isEqualToString:options.defaultStyle.name ?: @""]) {
+      defaultStyle = style;
+    }
+  }
+  [opts setValue:defaultStyle forKey:@"defaultStyle"];
   self.tileServerOptionsInternal = opts;
 }
 
 + (MLNTileServerOptions *)tileServerOptions {
-  auto cppOpts = [MLNSettings sharedSettings].tileServerOptionsInternal;
+  MLNTileServerOptions *cppOpts = [MLNSettings sharedSettings].tileServerOptionsInternal;
   if (cppOpts) {
-    MLNTileServerOptions *retVal = [[MLNTileServerOptions alloc] init];
-    retVal.baseURL = [NSString stringWithUTF8String:cppOpts->baseURL().c_str()];
-    retVal.uriSchemeAlias = [NSString stringWithUTF8String:cppOpts->uriSchemeAlias().c_str()];
-    retVal.apiKeyParameterName =
-        [NSString stringWithUTF8String:cppOpts->apiKeyParameterName().c_str()];
-
-    retVal.sourceTemplate = [NSString stringWithUTF8String:cppOpts->sourceTemplate().c_str()];
-    retVal.sourceDomainName = [NSString stringWithUTF8String:cppOpts->sourceDomainName().c_str()];
-    retVal.sourceVersionPrefix =
-        cppOpts->sourceVersionPrefix().has_value()
-            ? [NSString stringWithUTF8String:cppOpts->sourceVersionPrefix().value().c_str()]
-            : nil;
-
-    retVal.styleTemplate = [NSString stringWithUTF8String:cppOpts->styleTemplate().c_str()];
-    retVal.styleDomainName = [NSString stringWithUTF8String:cppOpts->styleDomainName().c_str()];
-    retVal.styleVersionPrefix =
-        cppOpts->styleVersionPrefix().has_value()
-            ? [NSString stringWithUTF8String:cppOpts->styleVersionPrefix().value().c_str()]
-            : nil;
-
-    retVal.spritesTemplate = [NSString stringWithUTF8String:cppOpts->spritesTemplate().c_str()];
-    retVal.spritesDomainName = [NSString stringWithUTF8String:cppOpts->spritesDomainName().c_str()];
-    retVal.spritesVersionPrefix =
-        cppOpts->styleVersionPrefix().has_value()
-            ? [NSString stringWithUTF8String:cppOpts->spritesVersionPrefix().value().c_str()]
-            : nil;
-
-    retVal.glyphsTemplate = [NSString stringWithUTF8String:cppOpts->glyphsTemplate().c_str()];
-    retVal.glyphsDomainName = [NSString stringWithUTF8String:cppOpts->glyphsDomainName().c_str()];
-    retVal.glyphsVersionPrefix =
-        cppOpts->styleVersionPrefix().has_value()
-            ? [NSString stringWithUTF8String:cppOpts->glyphsVersionPrefix().value().c_str()]
-            : nil;
-
-    retVal.tileTemplate = [NSString stringWithUTF8String:cppOpts->tileTemplate().c_str()];
-    retVal.tileDomainName = [NSString stringWithUTF8String:cppOpts->tileDomainName().c_str()];
-    retVal.tileVersionPrefix =
-        cppOpts->styleVersionPrefix().has_value()
-            ? [NSString stringWithUTF8String:cppOpts->tileVersionPrefix().value().c_str()]
-            : nil;
-
-    std::vector<mln::util::DefaultStyle> cppDefaultStyles = cppOpts->defaultStyles();
-
-    NSMutableArray<MLNDefaultStyle *> *mglStyles = [[NSMutableArray<MLNDefaultStyle *> alloc] init];
-    for (auto it = begin(cppDefaultStyles); it != end(cppDefaultStyles); ++it) {
-      NSString *url = [NSString stringWithUTF8String:it->getUrl().c_str()];
-
-      auto *mglDefaultStyle = [[MLNDefaultStyle alloc] init];
-      mglDefaultStyle.url = [NSURL URLWithString:url];
-      mglDefaultStyle.name = [NSString stringWithUTF8String:it->getName().c_str()];
-      mglDefaultStyle.version = it->getCurrentVersion();
-      [mglStyles addObject:mglDefaultStyle];
-
-      // set default style name
-      if (it->getName() == cppOpts->defaultStyle()) {
-        retVal.defaultStyle = mglDefaultStyle;
-      }
+    MLNTileServerOptions *retVal = MLNTileServerOptionsCopy(cppOpts);
+    // Classic reported the sprites, glyphs and tile version prefixes only when
+    // the style had one.
+    if (!cppOpts.styleVersionPrefix) {
+      retVal.spritesVersionPrefix = nil;
+      retVal.glyphsVersionPrefix = nil;
+      retVal.tileVersionPrefix = nil;
     }
-
-    retVal.defaultStyles = mglStyles;
     return retVal;
   }
-
   return nil;
 }
 

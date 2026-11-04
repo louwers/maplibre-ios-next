@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSCompoundPredicate+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSCompoundPredicate+MLNAdditions.h"
 
 #import "MLNStyleValue_Private.h"
@@ -5,20 +7,6 @@
 #import "MLNLoggingConfiguration_Private.h"
 #import "NSExpression+MLNPrivateAdditions.h"
 #import "NSPredicate+MLNPrivateAdditions.h"
-
-#include <mln/style/conversion/property_value.hpp>
-
-@implementation NSCompoundPredicate (MLNAdditions)
-
-- (std::vector<mln::style::Filter>)mgl_subfilters {
-  std::vector<mln::style::Filter> filters;
-  for (NSPredicate *predicate in self.subpredicates) {
-    filters.push_back(predicate.mgl_filter);
-  }
-  return filters;
-}
-
-@end
 
 @implementation NSCompoundPredicate (MLNExpressionAdditions)
 

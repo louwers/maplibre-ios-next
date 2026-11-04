@@ -1,10 +1,11 @@
+// Based on platform/darwin/src/MLNPointAnnotation.mm at ios-v7.0.0
+
 #import "MLNPointAnnotation.h"
 
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNShape_Private.h"
 #import "NSCoder+MLNAdditions.h"
 
-#import <mln/util/geometry.hpp>
 
 @implementation MLNPointAnnotation
 
@@ -58,9 +59,11 @@
   };
 }
 
-- (mln::Geometry<double>)geometryObject {
-  mln::Point<double> point = {self.coordinate.longitude, self.coordinate.latitude};
-  return point;
+- (id)geometryObject {
+  return @{
+    @"type" : @"Point",
+    @"coordinates" : @[ @(self.coordinate.longitude), @(self.coordinate.latitude) ]
+  };
 }
 
 @end

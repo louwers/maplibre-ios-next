@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSDictionary+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSDictionary+MLNAdditions.h"
 
 #import "NSArray+MLNAdditions.h"
@@ -5,17 +7,18 @@
 
 @implementation NSDictionary (MLNAdditions)
 
-- (mln::PropertyMap)mgl_propertyMap {
-  mln::PropertyMap propertyMap;
+- (NSDictionary<NSString *, id> *)mgl_propertyMap {
+  NSMutableDictionary<NSString *, id> *propertyMap =
+      [NSMutableDictionary dictionaryWithCapacity:self.count];
   for (NSString *key in self.allKeys) {
     if ([self[key] isKindOfClass:[NSDictionary class]]) {
-      propertyMap[[key UTF8String]] = [self[key] mgl_propertyMap];
+      propertyMap[key] = [self[key] mgl_propertyMap];
     } else if ([self[key] isKindOfClass:[NSArray class]]) {
       NSArray *array = self[key];
-      propertyMap[[key UTF8String]] = [array mgl_vector];
+      propertyMap[key] = [array mgl_vector];
     } else {
       NSExpression *expression = [NSExpression expressionForConstantValue:self[key]];
-      propertyMap[[key UTF8String]] = expression.mgl_constantMBGLValue;
+      propertyMap[key] = expression.mgl_constantJSONValue;
     }
   }
   return propertyMap;

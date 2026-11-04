@@ -1,101 +1,69 @@
+// Based on platform/darwin/src/MLNVectorTileSource.mm at ios-v7.0.0
+
 #import "MLNVectorTileSource_Private.h"
 
-#import "MLNFeature_Private.h"
+#import "MLNFFISourceQueries.h"
 #import "MLNLoggingConfiguration_Private.h"
-#import "MLNMapView_Private.h"
+#import "MLNMapView.h"
 #import "MLNSource_Private.h"
 #import "MLNStyle_Private.h"
 #import "MLNTileSource_Private.h"
 
-#import "NSPredicate+MLNPrivateAdditions.h"
+#import "NSPredicate+MLNAdditions.h"
 #import "NSURL+MLNAdditions.h"
 
-#include <mln/map/map.hpp>
-#include <mln/renderer/renderer.hpp>
-#include <mln/style/sources/vector_source.hpp>
-
 const MLNTileSourceOption MLNVectorTileSourceOptionEncoding = @"MLNVectorTileSourceOptionEncoding";
-
-@interface MLNVectorTileSource ()
-
-@property (nonatomic, readonly) mln::style::VectorSource *rawSource;
-
-@end
 
 @implementation MLNVectorTileSource
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                   configurationURL:(NSURL *)configurationURL {
-  auto source = std::make_unique<mln::style::VectorSource>(
-      identifier.UTF8String,
-      configurationURL.mgl_URLByStandardizingScheme.absoluteString.UTF8String);
-  return self = [super initWithPendingSource:std::move(source)];
+  NSDictionary *source = @{
+    @"type" : @"vector",
+    @"url" : configurationURL.mgl_URLByStandardizingScheme.absoluteString ?: @"",
+  };
+  return self = [super initWithPendingIdentifier:identifier sourceJSON:source];
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
             configurationURLString:(NSString *)configurationURLString {
-  auto source = std::make_unique<mln::style::VectorSource>(identifier.UTF8String,
-                                                           configurationURLString.UTF8String);
+  NSDictionary *source = @{@"type" : @"vector", @"url" : configurationURLString ?: @""};
 
-  return self = [super initWithPendingSource:std::move(source)];
+  return self = [super initWithPendingIdentifier:identifier sourceJSON:source];
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                   tileURLTemplates:(NSArray<NSString *> *)tileURLTemplates
                            options:(nullable NSDictionary<MLNTileSourceOption, id> *)options {
-  mln::Tileset tileSet = MLNTileSetFromTileURLTemplates(tileURLTemplates, options);
-  auto source = std::make_unique<mln::style::VectorSource>(identifier.UTF8String, tileSet);
-  return self = [super initWithPendingSource:std::move(source)];
-}
-
-- (mln::style::VectorSource *)rawSource {
-  return (mln::style::VectorSource *)super.rawSource;
+  NSMutableDictionary *source =
+      MLNTileSourceJSONFromTileURLTemplates(tileURLTemplates, options, @"vector");
+  source[@"type"] = @"vector";
+  return self = [super initWithPendingIdentifier:identifier sourceJSON:source];
 }
 
 - (NSURL *)configurationURL {
   MLNAssertStyleSourceIsValid();
-  auto url = self.rawSource->getURL();
-  return url ? [NSURL URLWithString:@(url->c_str())] : nil;
+  return self.mgl_configurationURL;
 }
 
 - (NSString *)attributionHTMLString {
-  if (!self.rawSource) {
+  if (!self.mgl_isValid) {
     MLNAssert(0, @"Source with identifier `%@` was invalidated after a style change",
               self.identifier);
     return nil;
   }
 
-  auto attribution = self.rawSource->getAttribution();
-  return attribution ? @(attribution->c_str()) : nil;
+  return self.mgl_attributionHTMLString;
 }
 
 - (NSArray<id<MLNFeature>> *)
     featuresInSourceLayersWithIdentifiers:(NSSet<NSString *> *)sourceLayerIdentifiers
                                 predicate:(nullable NSPredicate *)predicate {
   MLNAssertStyleSourceIsValid();
-  std::optional<std::vector<std::string>> optionalSourceLayerIDs;
-  if (sourceLayerIdentifiers) {
-    __block std::vector<std::string> layerIDs;
-    layerIDs.reserve(sourceLayerIdentifiers.count);
-    [sourceLayerIdentifiers
-        enumerateObjectsUsingBlock:^(NSString *_Nonnull identifier, BOOL *_Nonnull stop) {
-          layerIDs.push_back(identifier.UTF8String);
-        }];
-    optionalSourceLayerIDs = layerIDs;
+  if (![self.stylable isKindOfClass:[MLNMapView class]]) {
+    return @[];
   }
-
-  std::optional<mln::style::Filter> optionalFilter;
-  if (predicate) {
-    optionalFilter = predicate.mgl_filter;
-  }
-
-  std::vector<mln::Feature> features;
-  if ([self.stylable isKindOfClass:[MLNMapView class]]) {
-    MLNMapView *mapView = (MLNMapView *)self.stylable;
-    features = mapView.renderer->querySourceFeatures(self.rawSource->getID(),
-                                                     {optionalSourceLayerIDs, optionalFilter});
-  }
-  return MLNFeaturesFromMBGLFeatures(features);
+  return MLNFFIQuerySourceFeatures(self, sourceLayerIdentifiers, predicate);
 }
 
 // MARK: - Managing Feature State

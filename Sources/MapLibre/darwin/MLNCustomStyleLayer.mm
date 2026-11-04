@@ -1,8 +1,17 @@
+// Based on platform/darwin/src/MLNCustomStyleLayer.mm at ios-v7.0.0
+//
+// Classic backed this class with an mbgl::style::CustomLayer whose host called
+// the drawing methods during rendering. The C API has no custom layers, so the
+// layer is represented in the style by a placeholder that draws nothing (an
+// invisible background layer). It keeps the layer's identifier, position and
+// object identity; the drawing methods are never called (C_API_GAPS.md).
+
 #import "MLNCustomStyleLayer.h"
 #import "MLNCustomStyleLayer_Private.h"
 
 #import "MLNGeometry_Private.h"
-#import "MLNMapView_Private.h"
+#import "MLNLoggingConfiguration_Private.h"
+#import "MLNMapView.h"
 #import "MLNStyleLayer_Private.h"
 #import "MLNStyle_Private.h"
 
@@ -10,32 +19,29 @@
 #import <MetalKit/MetalKit.h>
 #endif
 
-#include <mln/gfx/context.hpp>
-#include <mln/math/wrap.hpp>
-#include <mln/style/layers/custom_layer.hpp>
-
-#if MLN_RENDER_BACKEND_METAL
-#include <mln/style/layers/mtl/custom_layer_render_parameters.hpp>
-#endif
-
-class MLNCustomLayerHost;
-
 @interface MLNCustomStyleLayer ()
-@property (nonatomic, readonly) mln::style::CustomLayer *rawLayer;
 @property (nonatomic, readonly, nullable) MLNMapView *mapView;
 @property (nonatomic, weak, readwrite) MLNStyle *style;
 @end
 
-@implementation MLNCustomStyleLayer
-
-- (instancetype)initWithIdentifier:(NSString *)identifier {
-  auto layer = std::make_unique<mln::style::CustomLayer>(
-      identifier.UTF8String, std::make_unique<MLNCustomLayerHost>(self));
-  return self = [super initWithPendingLayer:std::move(layer)];
+@implementation MLNCustomStyleLayer {
+  // The placeholder's visibility stays "none"; this is the layer's own.
+  BOOL _layerVisible;
 }
 
-- (mln::style::CustomLayer *)rawLayer {
-  return (mln::style::CustomLayer *)super.rawLayer;
+- (instancetype)initWithIdentifier:(NSString *)identifier {
+  if (self = [super initWithIdentifier:identifier layerType:@"background" sourceIdentifier:nil]) {
+    _layerVisible = YES;
+    [self mgl_setJSON:@"none" forProperty:@"visibility" errorFormat:@"%@"];
+    [self mgl_setJSON:@0 forProperty:@"background-opacity" errorFormat:@"%@"];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+      MLNLogWarning(@"MLNCustomStyleLayer is not supported on the MapLibre Native C API: the layer "
+                    @"keeps its place in the style but never draws. This will be logged only "
+                    @"once.");
+    });
+  }
+  return self;
 }
 
 - (MLNMapView *)mapView {
@@ -45,26 +51,50 @@ class MLNCustomLayerHost;
   return nil;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #if TARGET_OS_IPHONE
 - (EAGLContext *)context {
-  return self.mapView.context;
+  // Only the OpenGL backend had a context; the C API renders with Metal.
+  return nil;
 }
 #else
 - (CGLContextObj)context {
-  return self.mapView.context;
+  return NULL;
 }
 #endif
+#pragma clang diagnostic pop
 
 - (void)addToStyle:(MLNStyle *)style belowLayer:(MLNStyleLayer *)otherLayer {
   self.style = style;
   self.style.customLayers[self.identifier] = self;
   [super addToStyle:style belowLayer:otherLayer];
+  // Classic called this when the core initialized the layer for rendering.
+  if (self.mapView) {
+    [self didMoveToMapView:self.mapView];
+  }
 }
 
 - (void)removeFromStyle:(MLNStyle *)style {
+  MLNMapView *mapView = self.mapView;
   [super removeFromStyle:style];
+  if (mapView) {
+    [self willMoveFromMapView:mapView];
+  }
   self.style.customLayers[self.identifier] = nil;
   self.style = nil;
+}
+
+- (void)setVisible:(BOOL)visible {
+  MLNAssertStyleLayerIsValid();
+
+  _layerVisible = visible;
+}
+
+- (BOOL)isVisible {
+  MLNAssertStyleLayerIsValid();
+
+  return _layerVisible;
 }
 
 - (void)didMoveToMapView:(MLNMapView *)mapView {
@@ -80,112 +110,10 @@ class MLNCustomLayerHost;
 }
 
 - (void)setNeedsDisplay {
-  [self.mapView setNeedsRerender];
+  id stylable = self.style.stylable;
+  if ([stylable respondsToSelector:@selector(mgl_setNeedsRerender)]) {
+    [(id<MLNFFIStylable>)stylable mgl_setNeedsRerender];
+  }
 }
 
 @end
-
-class MLNCustomLayerHost : public mln::style::CustomLayerHost {
-public:
-  MLNCustomLayerHost(MLNCustomStyleLayer *styleLayer) {
-    layerRef = styleLayer;
-    layer = nil;
-  }
-
-  void initialize(const mln::style::CustomLayerInitParameters &) override {
-    if (layerRef == nil)
-      return;
-    else if (layer == nil)
-      layer = layerRef;
-
-    if (layer.mapView) {
-      [layer didMoveToMapView:layer.mapView];
-    }
-  }
-
-  void preRender(const mln::gfx::Context &context,
-                 const mln::style::CustomLayerRenderParameters &parameters) override {
-    if (!layer) return;
-
-#if MLN_RENDER_BACKEND_METAL
-    auto renderPassDesc =
-        static_cast<const mln::style::mtl::CustomLayerRenderParameters &>(parameters)
-            .renderPassDesc.get();
-    MTL::CommandBuffer *cmdPtr =
-        static_cast<const mln::style::mtl::CustomLayerRenderParameters &>(parameters)
-            .commandBuffer.get();
-    id<MTLCommandBuffer> commandBuffer = (__bridge id<MTLCommandBuffer>)cmdPtr;
-    layer.commandBuffer = commandBuffer;
-    layer.renderPassDesc = (__bridge MTLRenderPassDescriptor *)renderPassDesc;
-
-#endif
-
-    MLNStyleLayerDrawingContext drawingContext = {
-        .size = CGSizeMake(parameters.width, parameters.height),
-        .centerCoordinate = CLLocationCoordinate2DMake(parameters.latitude, parameters.longitude),
-        .zoomLevel = parameters.zoom,
-        .direction = mln::util::wrap(parameters.bearing, 0., 360.),
-        .pitch = static_cast<CGFloat>(parameters.pitch),
-        .fieldOfView = static_cast<CGFloat>(parameters.fieldOfView),
-        .projectionMatrix = MLNMatrix4Make(parameters.projectionMatrix),
-        .nearClippedProjectionMatrix = MLNMatrix4Make(parameters.nearClippedProjectionMatrix)};
-
-    if (layer.mapView) {
-      [layer preDrawInMapView:layer.mapView withContext:drawingContext];
-    }
-  }
-
-  void render(const mln::style::CustomLayerRenderParameters &parameters) override {
-    if (!layer) return;
-
-#if MLN_RENDER_BACKEND_METAL
-    MTL::CommandBuffer *cmdPtr =
-        static_cast<const mln::style::mtl::CustomLayerRenderParameters &>(parameters)
-            .commandBuffer.get();
-    id<MTLCommandBuffer> commandBuffer = (__bridge id<MTLCommandBuffer>)cmdPtr;
-    layer.commandBuffer = commandBuffer;
-    MTL::RenderCommandEncoder *ptr =
-        static_cast<const mln::style::mtl::CustomLayerRenderParameters &>(parameters).encoder.get();
-    id<MTLRenderCommandEncoder> encoder = (__bridge id<MTLRenderCommandEncoder>)ptr;
-    layer.renderEncoder = encoder;
-#endif
-
-    MLNStyleLayerDrawingContext drawingContext = {
-        .size = CGSizeMake(parameters.width, parameters.height),
-        .centerCoordinate = CLLocationCoordinate2DMake(parameters.latitude, parameters.longitude),
-        .zoomLevel = parameters.zoom,
-        .direction = mln::util::wrap(parameters.bearing, 0., 360.),
-        .pitch = static_cast<CGFloat>(parameters.pitch),
-        .fieldOfView = static_cast<CGFloat>(parameters.fieldOfView),
-        .projectionMatrix = MLNMatrix4Make(parameters.projectionMatrix),
-        .nearClippedProjectionMatrix = MLNMatrix4Make(parameters.nearClippedProjectionMatrix)};
-
-    if (layer.mapView) {
-      [layer drawInMapView:layer.mapView withContext:drawingContext];
-    }
-  }
-
-  void contextLost() override {}
-
-  void deinitialize() override {
-    if (layer == nil) return;
-
-    if (layer.mapView) {
-      [layer willMoveFromMapView:layer.mapView];
-    }
-    layerRef = layer;
-    layer = nil;
-  }
-
-private:
-  __weak MLNCustomStyleLayer *layerRef;
-  MLNCustomStyleLayer *layer = nil;
-};
-
-namespace mln {
-
-MLNStyleLayer *CustomStyleLayerPeerFactory::createPeer(style::Layer *rawLayer) {
-  return [[MLNCustomStyleLayer alloc] initWithRawLayer:rawLayer];
-}
-
-}  // namespace mln

@@ -211,6 +211,15 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   return [_sourceObjects objectForKey:identifier];
 }
 
+- (NSString *)mgl_topInsertionLayerIdentifier {
+  for (MLNFFILayerInfo *info in [self.mgl_map styleLayers]) {
+    if ([info.identifier hasPrefix:MLNInternalStyleIdentifierPrefix]) {
+      return info.identifier;
+    }
+  }
+  return nil;
+}
+
 - (void)mgl_deferLayer:(MLNStyleLayer *)layer json:(NSDictionary *)json belowLayer:(NSString *)before {
   MLNLogWarning(@"Layer %@ refers to source %@, which is not in the style yet; it will be added "
                 @"when the source is.",

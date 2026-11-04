@@ -1,14 +1,12 @@
+// Based on platform/darwin/src/MLNMapSnapshotter.mm at ios-v7.0.0
+
 #import "MLNMapSnapshotter.h"
 
-#import <mln/actor/actor.hpp>
-#import <mln/actor/scheduler.hpp>
-#import <mln/map/camera.hpp>
-#import <mln/map/map_options.hpp>
-#import <mln/map/map_snapshotter.hpp>
-#import <mln/storage/resource_options.hpp>
-#import <mln/util/client_options.hpp>
-#import <mln/util/geo.hpp>
-#import <mln/util/string.hpp>
+#import <MaplibreNativeC/maplibre_native_c.h>
+
+#import "MLNFFI.h"
+#import "MLNFFIMap+Style.h"
+#import "MLNGeoJSON.h"
 
 #import "MLNAnnotationImage_Private.h"
 #import "MLNAttributionInfo_Private.h"
@@ -40,95 +38,96 @@
 
 #import "NSBundle+MLNAdditions.h"
 
-#include <optional>
+#include <vector>
 
 const CGPoint MLNLogoImagePosition = CGPointMake(8, 8);
 const CGFloat MLNSnapshotterMinimumPixelSize = 64;
 NSString *const MLNSnapshotterAnnotationSpritePrefix = @"org.maplibre.sprites.";
 
-MLNImage *MLNAttributedSnapshot(mln::MapSnapshotter::Attributions attributions, MLNImage *mglImage,
-                                mln::MapSnapshotter::PointForFn pointForFn,
-                                mln::MapSnapshotter::LatLngForFn latLngForFn,
-                                MLNMapSnapshotOptions *options,
-                                MLNMapSnapshotOverlayHandler overlayHandler);
+/// Layers, sources and images the snapshotter adds for annotations. The prefix
+/// hides them from MLNStyle, as classic's annotation manager kept its own.
+static NSString *const MLNSnapshotterAnnotationPrefix = @"org.maplibre.next.snapshot.annotations.";
+
+/**
+ The transform of a rendered snapshot, as classic's PointForFn and LatLngForFn
+ captured the core's transform state: a C API projection of the view the still
+ image was rendered with.
+ */
+@interface MLNSnapshotProjection : NSObject
+- (instancetype)initWithView:(const mln_map_view &)view;
+- (CGPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate;
+- (CLLocationCoordinate2D)coordinateForPoint:(CGPoint)point;
+@end
+
+@implementation MLNSnapshotProjection {
+  mln_map_projection _projection;
+}
+
+- (instancetype)initWithView:(const mln_map_view &)view {
+  if (self = [super init]) {
+    mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+    if (mln_map_projection_create(&view, &_projection, &diagnostic) != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to create the snapshot projection: %s", diagnostic.message);
+    }
+  }
+  return self;
+}
+
+- (void)dealloc {
+  mln_map_projection_release(_projection);
+}
+
+// The C API converts in the world copy nearest the camera center, as classic
+// wrapped the coordinate and unwrapped it for the shortest path to the center.
+- (CGPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate {
+  mln_screen_point point = {0, 0};
+  mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+  mln_map_projection_pixel_for_lat_lng(_projection, MLNLatLngFromLocationCoordinate2D(coordinate),
+                                       &point, &diagnostic);
+  return CGPointMake(point.x, point.y);
+}
+
+// Transform::screenCoordinateToLatLng wraps the longitude by default.
+- (CLLocationCoordinate2D)coordinateForPoint:(CGPoint)point {
+  mln_lat_lng latLng = {0, 0};
+  mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+  mln_map_projection_lat_lng_for_pixel(_projection, {point.x, point.y}, &latLng, &diagnostic);
+  return MLNLocationCoordinate2DFromLatLng(latLng);
+}
+
+@end
+
+MLNImage *MLNAttributedSnapshot(NSArray<NSString *> *attributions, MLNImage *mglImage,
+                                MLNMapSnapshotOptions *options, void (^overlayHandler)());
 MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshotOptions *options,
-                                              mln::MapSnapshotter::Attributions attributions,
-                                              mln::MapSnapshotter::PointForFn pointForFn,
-                                              mln::MapSnapshotter::LatLngForFn latLngForFn,
+                                              NSArray<NSString *> *attributions,
+                                              MLNSnapshotProjection *projection,
                                               MLNMapSnapshotOverlayHandler overlayHandler,
                                               NSError *_Nullable *outError);
 NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
-    mln::MapSnapshotter::Attributions attributions);
+    NSArray<NSString *> *attributions);
 
-class MLNMapSnapshotterDelegateHost : public mln::MapSnapshotterObserver {
-public:
-  MLNMapSnapshotterDelegateHost(MLNMapSnapshotter *snapshotter_) : snapshotter(snapshotter_) {}
-
-  void onDidFailLoadingStyle(const std::string &errorMessage) {
-    MLNMapSnapshotter *strongSnapshotter = snapshotter;
-    if ([strongSnapshotter.delegate respondsToSelector:@selector(mapSnapshotterDidFail:
-                                                                             withError:)]) {
-      NSString *description = @(errorMessage.c_str());
-      NSDictionary *userInfo = @{
-        NSLocalizedDescriptionKey : NSLocalizedStringWithDefaultValue(
-            @"SNAPSHOT_LOAD_STYLE_FAILED_DESC", nil, nil,
-            @"The snapshot failed because the style can’t be loaded.",
-            @"User-friendly error description"),
-        NSLocalizedFailureReasonErrorKey : description,
-      };
-      NSError *error = [NSError errorWithDomain:MLNErrorDomain
-                                           code:MLNErrorCodeLoadStyleFailed
-                                       userInfo:userInfo];
-      [strongSnapshotter.delegate mapSnapshotterDidFail:snapshotter withError:error];
-    }
-  }
-
-  void onDidFinishLoadingStyle() {
-    MLNMapSnapshotter *strongSnapshotter = snapshotter;
-    if ([strongSnapshotter.delegate respondsToSelector:@selector(mapSnapshotter:
-                                                           didFinishLoadingStyle:)]) {
-      [strongSnapshotter.delegate mapSnapshotter:snapshotter
-                           didFinishLoadingStyle:snapshotter.style];
-    }
-  }
-
-  void onStyleImageMissing(const std::string &imageName) {
-    MLNMapSnapshotter *strongSnapshotter = snapshotter;
-    if ([strongSnapshotter.delegate respondsToSelector:@selector(mapSnapshotter:
-                                                           didFailLoadingImageNamed:)]) {
-      [strongSnapshotter.delegate mapSnapshotter:snapshotter
-                        didFailLoadingImageNamed:@(imageName.c_str())];
-    }
-  }
-
-private:
-  __weak MLNMapSnapshotter *snapshotter;
-};
 
 @interface MLNMapSnapshotOverlay () <MLNMapSnapshotProtocol>
 @property (nonatomic, assign) CGFloat scale;
 - (instancetype)initWithContext:(CGContextRef)context
                           scale:(CGFloat)scale
-                     pointForFn:(mln::MapSnapshotter::PointForFn)pointForFn
-                    latLngForFn:(mln::MapSnapshotter::LatLngForFn)latLngForFn;
+                     projection:(MLNSnapshotProjection *)projection;
 
 @end
 
 @implementation MLNMapSnapshotOverlay {
-  mln::MapSnapshotter::PointForFn _pointForFn;
-  mln::MapSnapshotter::LatLngForFn _latLngForFn;
+  MLNSnapshotProjection *_projection;
 }
 
 - (instancetype)initWithContext:(CGContextRef)context
                           scale:(CGFloat)scale
-                     pointForFn:(mln::MapSnapshotter::PointForFn)pointForFn
-                    latLngForFn:(mln::MapSnapshotter::LatLngForFn)latLngForFn {
+                     projection:(MLNSnapshotProjection *)projection {
   self = [super init];
   if (self) {
     _context = context;
     _scale = scale;
-    _pointForFn = pointForFn;
-    _latLngForFn = latLngForFn;
+    _projection = projection;
   }
 
   return self;
@@ -137,28 +136,24 @@ private:
 #if TARGET_OS_IPHONE
 
 - (CGPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate {
-  mln::ScreenCoordinate sc = _pointForFn(MLNLatLngFromLocationCoordinate2D(coordinate));
-  return CGPointMake(sc.x, sc.y);
+  return [_projection pointForCoordinate:coordinate];
 }
 
 - (CLLocationCoordinate2D)coordinateForPoint:(CGPoint)point {
-  mln::LatLng latLng = _latLngForFn(mln::ScreenCoordinate(point.x, point.y));
-  return MLNLocationCoordinate2DFromLatLng(latLng);
+  return [_projection coordinateForPoint:point];
 }
 
 #else
 
 - (NSPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate {
-  mln::ScreenCoordinate sc = _pointForFn(MLNLatLngFromLocationCoordinate2D(coordinate));
+  CGPoint sc = [_projection pointForCoordinate:coordinate];
   CGFloat height = ((CGFloat)CGBitmapContextGetHeight(self.context)) / self.scale;
   return NSMakePoint(sc.x, height - sc.y);
 }
 
 - (CLLocationCoordinate2D)coordinateForPoint:(NSPoint)point {
   CGFloat height = ((CGFloat)CGBitmapContextGetHeight(self.context)) / self.scale;
-  auto screenCoord = mln::ScreenCoordinate(point.x, height - point.y);
-  mln::LatLng latLng = _latLngForFn(screenCoord);
-  return MLNLocationCoordinate2DFromLatLng(latLng);
+  return [_projection coordinateForPoint:CGPointMake(point.x, height - point.y)];
 }
 
 #endif
@@ -207,25 +202,21 @@ private:
 @interface MLNMapSnapshot () <MLNMapSnapshotProtocol>
 - (instancetype)initWithImage:(nullable MLNImage *)image
                         scale:(CGFloat)scale
-                   pointForFn:(mln::MapSnapshotter::PointForFn)pointForFn
-                  latLngForFn:(mln::MapSnapshotter::LatLngForFn)latLngForFn;
+                   projection:(MLNSnapshotProjection *)projection;
 
 @property (nonatomic) CGFloat scale;
 @end
 
 @implementation MLNMapSnapshot {
-  mln::MapSnapshotter::PointForFn _pointForFn;
-  mln::MapSnapshotter::LatLngForFn _latLngForFn;
+  MLNSnapshotProjection *_projection;
 }
 
 - (instancetype)initWithImage:(nullable MLNImage *)image
                         scale:(CGFloat)scale
-                   pointForFn:(mln::MapSnapshotter::PointForFn)pointForFn
-                  latLngForFn:(mln::MapSnapshotter::LatLngForFn)latLngForFn {
+                   projection:(MLNSnapshotProjection *)projection {
   self = [super init];
   if (self) {
-    _pointForFn = pointForFn;
-    _latLngForFn = latLngForFn;
+    _projection = projection;
     _scale = scale;
     _image = image;
   }
@@ -235,40 +226,69 @@ private:
 #if TARGET_OS_IPHONE
 
 - (CGPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate {
-  mln::ScreenCoordinate sc = _pointForFn(MLNLatLngFromLocationCoordinate2D(coordinate));
-  return CGPointMake(sc.x, sc.y);
+  return [_projection pointForCoordinate:coordinate];
 }
 
 - (CLLocationCoordinate2D)coordinateForPoint:(CGPoint)point {
-  mln::LatLng latLng = _latLngForFn(mln::ScreenCoordinate(point.x, point.y));
-  return MLNLocationCoordinate2DFromLatLng(latLng);
+  return [_projection coordinateForPoint:point];
 }
 
 #else
 
 - (NSPoint)pointForCoordinate:(CLLocationCoordinate2D)coordinate {
-  mln::ScreenCoordinate sc = _pointForFn(MLNLatLngFromLocationCoordinate2D(coordinate));
+  CGPoint sc = [_projection pointForCoordinate:coordinate];
   return NSMakePoint(sc.x, self.image.size.height - sc.y);
 }
 
 - (CLLocationCoordinate2D)coordinateForPoint:(NSPoint)point {
-  auto screenCoord = mln::ScreenCoordinate(point.x, self.image.size.height - point.y);
-  mln::LatLng latLng = _latLngForFn(screenCoord);
-  return MLNLocationCoordinate2DFromLatLng(latLng);
+  return [_projection coordinateForPoint:CGPointMake(point.x, self.image.size.height - point.y)];
 }
 
 #endif
 
 @end
 
-@interface MLNMapSnapshotter () <MLNMultiPointDelegate>
+@interface MLNMapSnapshotter () <MLNMultiPointDelegate, MLNFFIMapEventObserver, MLNFFIStylable>
 @property (nonatomic) BOOL loading;
 @property (nonatomic) BOOL terminated;
 @end
 
+/// Where the snapshot map's style is in loading.
+typedef NS_ENUM(NSUInteger, MLNSnapshotStyleState) {
+  MLNSnapshotStyleStateLoading,
+  MLNSnapshotStyleStateLoaded,
+  MLNSnapshotStyleStateFailed,
+};
+
+/// One graphics device for all snapshotters, which the C API allows to share.
+static mln_graphics_device MLNSnapshotterGraphicsDevice(void) {
+  static mln_graphics_device device = MLN_HANDLE_NULL;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+    mln_graphics_device_options options = {sizeof(mln_graphics_device_options)};
+    if (mln_graphics_device_create(&options, &device, &diagnostic) != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to create a graphics device for snapshots: %s", diagnostic.message);
+    }
+  });
+  return device;
+}
+
+// Classic wrapped mbgl::MapSnapshotter, a static map with a headless renderer.
+// Here each start creates a static C API map with a texture session on a
+// graphics device, as mbgl::MapSnapshotter was created anew for each start, and
+// renders it with mln_map_request_still_image().
 @implementation MLNMapSnapshotter {
-  std::unique_ptr<mln::MapSnapshotter> _mbglMapSnapshotter;
-  std::unique_ptr<MLNMapSnapshotterDelegateHost> _delegateHost;
+  MLNFFIMap *_map;
+  mln_render_session _session;
+  MLNStyle *_style;
+  MLNSnapshotStyleState _styleState;
+  NSString *_styleError;
+  /// Runs once the style loads or fails, for a start that waits for it.
+  void (^_styleCompletion)(NSString *_Nullable error);
+  /// Changes on each start and cancel, so late callbacks of an earlier start
+  /// are dropped, as mbgl::MapSnapshotter::cancel() dropped its callback.
+  uint64_t _startGeneration;
   NSMutableArray<id<MLNAnnotation>> *_annotationsToInstall;
   NSMutableSet<NSString *> *_installedImages;
 }
@@ -326,10 +346,16 @@ private:
   [_annotationsToInstall addObjectsFromArray:annotations];
 }
 
+// Classic added annotations to the core's annotation manager, which the C API
+// lacks (C_API_GAPS.md). They are drawn with style layers configured as the
+// annotation manager configured its own: a line or fill layer per shape, in
+// order, and one symbol layer for the points above them.
 - (void)installAnnotations:(NSArray<id<MLNAnnotation>> *)annotations {
   MLNLogDebug(@"install: %lu annotations", annotations.count);
   if (!annotations) return;
 
+  NSMutableArray<NSDictionary *> *points = [NSMutableArray array];
+  NSUInteger shapeIndex = 0;
   for (id<MLNAnnotation> annotation in annotations) {
     MLNAssert([annotation conformsToProtocol:@protocol(MLNAnnotation)],
               @"annotation should conform to MLNAnnotation");
@@ -339,13 +365,12 @@ private:
       if (!multiPoint.pointCount) {
         continue;
       }
-      _mbglMapSnapshotter->addAnnotation([multiPoint annotationObjectWithDelegate:self]);
+      [self installShapeAnnotation:multiPoint index:shapeIndex++];
     } else if (![annotation isKindOfClass:[MLNMultiPolyline class]] &&
                ![annotation isKindOfClass:[MLNMultiPolygon class]] &&
                ![annotation isKindOfClass:[MLNShapeCollection class]] &&
                ![annotation isKindOfClass:[MLNPointCollection class]]) {
       NSString *symbolName;
-      NSValue *annotationValue = [NSValue valueWithNonretainedObject:annotation];
       MLNAnnotationImage *annotationImage;
 
       if ([self.delegate respondsToSelector:@selector(mapSnapshotter:imageForAnnotation:)]) {
@@ -365,17 +390,113 @@ private:
 
       [self installAnnotationImage:annotationImage];
 
-      _mbglMapSnapshotter->addAnnotation(mln::SymbolAnnotation{
-          MLNPointFromLocationCoordinate2D(annotation.coordinate), symbolName.UTF8String});
+      CLLocationCoordinate2D coordinate = annotation.coordinate;
+      MLNLatLngFromLocationCoordinate2D(coordinate);
+      [points addObject:@{
+        @"type" : @"Feature",
+        @"geometry" : @{
+          @"type" : @"Point",
+          @"coordinates" : @[ @(coordinate.longitude), @(coordinate.latitude) ]
+        },
+        @"properties" : @{
+          @"sprite" : [MLNSnapshotterAnnotationPrefix stringByAppendingString:symbolName]
+        }
+      }];
     }
   }
+  if (points.count) {
+    NSString *identifier = [MLNSnapshotterAnnotationPrefix stringByAppendingString:@"points"];
+    [_map addStyleSourceJSON:@{
+      @"type" : @"geojson",
+      @"data" : @{@"type" : @"FeatureCollection", @"features" : points}
+    }
+                  identifier:identifier
+                     message:nil];
+    [_map addStyleLayerJSON:@{
+      @"id" : identifier,
+      @"type" : @"symbol",
+      @"source" : identifier,
+      @"layout" : @{
+        @"icon-image" : @[ @"image", @[ @"to-string", @[ @"get", @"sprite" ] ] ],
+        @"icon-allow-overlap" : @YES,
+        @"icon-ignore-placement" : @YES,
+      }
+    }
+                 belowLayer:nil
+                    message:nil];
+  }
+}
+
+/// The GeoJSON geometry of a shape annotation.
+static NSDictionary *MLNSnapshotterGeometry(MLNShape *shape) {
+  NSDictionary *object = MLNGeoJSONObjectFromShape(shape);
+  if ([object[@"type"] isEqual:@"Feature"]) {
+    return object[@"geometry"];
+  }
+  return object;
+}
+
+- (void)installShapeAnnotation:(MLNMultiPoint *)multiPoint index:(NSUInteger)index {
+  NSString *identifier = [MLNSnapshotterAnnotationPrefix
+      stringByAppendingFormat:@"shape.%lu", (unsigned long)index];
+  NSDictionary *layer;
+  double opacity = [self alphaForShapeAnnotation:multiPoint];
+  if ([multiPoint isKindOfClass:[MLNPolygon class]]) {
+    MLNPolygon *polygon = (MLNPolygon *)multiPoint;
+    layer = @{
+      @"id" : identifier,
+      @"type" : @"fill",
+      @"source" : identifier,
+      @"paint" : @{
+        @"fill-opacity" : @(opacity),
+        @"fill-color" : MLNSnapshotterColorJSON([self fillColorForPolygonAnnotation:polygon]),
+        @"fill-outline-color" :
+            MLNSnapshotterColorJSON([self strokeColorForShapeAnnotation:polygon]),
+      }
+    };
+  } else if ([multiPoint isKindOfClass:[MLNPolyline class]]) {
+    MLNPolyline *polyline = (MLNPolyline *)multiPoint;
+    layer = @{
+      @"id" : identifier,
+      @"type" : @"line",
+      @"source" : identifier,
+      @"layout" : @{@"line-join" : @"round"},
+      @"paint" : @{
+        @"line-opacity" : @(opacity),
+        @"line-width" : @([self lineWidthForPolylineAnnotation:polyline]),
+        @"line-color" : MLNSnapshotterColorJSON([self strokeColorForShapeAnnotation:polyline]),
+      }
+    };
+  } else {
+    return;
+  }
+  [_map addStyleSourceJSON:@{@"type" : @"geojson", @"data" : MLNSnapshotterGeometry(multiPoint)}
+                identifier:identifier
+                   message:nil];
+  NSString *message;
+  if ([_map addStyleLayerJSON:layer belowLayer:nil message:&message] != MLN_STATUS_OK) {
+    MLNLogError(@"Failed to add an annotation to the snapshot: %@", message);
+  }
+}
+
+/// A color as the style JSON that the core parses into the same mln::Color.
+static id MLNSnapshotterColorJSON(MLNColor *color) {
+  MLNColorComponents components = color.mgl_color;
+  if (components.a == 0) {
+    return @[ @"rgba", @0, @0, @0, @0 ];
+  }
+  return @[
+    @"rgba", @(components.r / components.a * 255), @(components.g / components.a * 255),
+    @(components.b / components.a * 255), @(components.a)
+  ];
 }
 
 - (void)installAnnotationImage:(MLNAnnotationImage *)annotationImage {
   NSString *iconIdentifier = annotationImage.styleIconIdentifier;
   if (![_installedImages containsObject:iconIdentifier]) {
-    _mbglMapSnapshotter->addAnnotationImage(
-        [annotationImage.image mgl_styleImageWithIdentifier:iconIdentifier]);
+    [annotationImage.image
+        mgl_addToMap:_map
+            withName:[MLNSnapshotterAnnotationPrefix stringByAppendingString:iconIdentifier]];
   }
 }
 
@@ -435,57 +556,182 @@ private:
   // standalone local usage of the snapshotter from becoming a no-op. POSTCONDITION: Only refer to
   // this variable in the final result queue. POSTCONDITION: It is important to nil out this
   // variable at some point in the future to avoid a leak. In cases where the completion handler
-  // gets called, the variable should be nilled out explicitly. If -cancel is called, mbgl releases
-  // the snapshot block below, causing the only remaining references to the snapshotter to go out of
-  // scope.
+  // gets called, the variable should be nilled out explicitly. If -cancel is called, the pending
+  // callbacks see a newer start generation and release the snapshotter without calling back.
   __block MLNMapSnapshotter *strongSelf = self;
-  _mbglMapSnapshotter->snapshot(^(std::exception_ptr mbglError, mln::PremultipliedImage image,
-                                  mln::MapSnapshotter::Attributions attributions,
-                                  mln::MapSnapshotter::PointForFn pointForFn,
-                                  mln::MapSnapshotter::LatLngForFn latLngForFn) {
-    if (mbglError) {
-      NSString *description = @(mln::util::toString(mbglError).c_str());
-      NSDictionary *userInfo = @{NSLocalizedDescriptionKey : description};
-      NSError *error = [NSError errorWithDomain:MLNErrorDomain
-                                           code:MLNErrorCodeSnapshotFailed
-                                       userInfo:userInfo];
+  uint64_t generation = _startGeneration;
+  void (^fail)(NSString *) = ^(NSString *description) {
+    NSDictionary *userInfo = @{NSLocalizedDescriptionKey : description ?: @""};
+    NSError *error = [NSError errorWithDomain:MLNErrorDomain
+                                         code:MLNErrorCodeSnapshotFailed
+                                     userInfo:userInfo];
 
-      // Dispatch to result queue
-      dispatch_async(queue, ^{
-        strongSelf.loading = NO;
-        completion(nil, error);
-        strongSelf = nil;
-      });
-    } else {
-#if TARGET_OS_IPHONE
-      MLNImage *mglImage = [[MLNImage alloc] initWithMLNPremultipliedImage:std::move(image)
-                                                                     scale:options.scale];
-#else
-            MLNImage *mglImage = [[MLNImage alloc] initWithMLNPremultipliedImage:std::move(image)];
-            mglImage.size = NSMakeSize(mglImage.size.width / options.scale,
-                                       mglImage.size.height / options.scale);
-#endif
-      // Process image watermark in a work queue
-      dispatch_queue_t workQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    // Dispatch to result queue
+    dispatch_async(queue, ^{
+      strongSelf.loading = NO;
+      completion(nil, error);
+      strongSelf = nil;
+    });
+  };
 
-      dispatch_async(workQueue, ^{
-        // Call a function that cannot accidentally capture self.
-        NSError *error;
-        MLNMapSnapshot *snapshot = MLNSnapshotWithDecoratedImage(
-            mglImage, options, attributions, pointForFn, latLngForFn, overlayHandler, &error);
-
-        // Dispatch result to result queue
-        dispatch_async(queue, ^{
-          strongSelf.loading = NO;
-          completion(snapshot, error);
-          strongSelf = nil;
-        });
-      });
+  // mbgl rendered the still image once the style and everything the view
+  // needed had loaded; annotations are style layers here, so they are added
+  // once the style has loaded.
+  [self whenStyleLoaded:^(NSString *styleError) {
+    if (strongSelf->_startGeneration != generation) {
+      strongSelf = nil;
+      return;
     }
-  });
+    if (styleError) {
+      fail(styleError);
+      return;
+    }
+    if (strongSelf->_annotationsToInstall) {
+      [strongSelf installAnnotations:strongSelf->_annotationsToInstall];
+    }
+    [strongSelf renderStillImageWithOptions:options
+                                 completion:^(MLNImage *mglImage, NSArray<NSString *> *attributions,
+                                              MLNSnapshotProjection *projection,
+                                              NSString *renderError) {
+                                   if (strongSelf->_startGeneration != generation) {
+                                     strongSelf = nil;
+                                     return;
+                                   }
+                                   if (!mglImage) {
+                                     fail(renderError);
+                                     return;
+                                   }
+                                   // Process image watermark in a work queue
+                                   dispatch_queue_t workQueue = dispatch_get_global_queue(
+                                       DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+
+                                   dispatch_async(workQueue, ^{
+                                     // Call a function that cannot accidentally capture self.
+                                     NSError *error;
+                                     MLNMapSnapshot *snapshot = MLNSnapshotWithDecoratedImage(
+                                         mglImage, options, attributions, projection,
+                                         overlayHandler, &error);
+
+                                     // Dispatch result to result queue
+                                     dispatch_async(queue, ^{
+                                       strongSelf.loading = NO;
+                                       completion(snapshot, error);
+                                       strongSelf = nil;
+                                     });
+                                   });
+                                 }];
+  }];
 }
 
-MLNImage *MLNAttributedSnapshot(mln::MapSnapshotter::Attributions attributions, MLNImage *mglImage,
+/// Calls `block` on the main queue once the snapshot style has loaded, with
+/// the load error if it failed.
+- (void)whenStyleLoaded:(void (^)(NSString *_Nullable error))block {
+  switch (_styleState) {
+    case MLNSnapshotStyleStateLoaded:
+      block(nil);
+      break;
+    case MLNSnapshotStyleStateFailed:
+      block(_styleError ?: @"The style failed to load.");
+      break;
+    case MLNSnapshotStyleStateLoading:
+      _styleCompletion = [block copy];
+      break;
+  }
+}
+
+/// Renders a still image of the snapshot map and reads it back.
+- (void)renderStillImageWithOptions:(MLNMapSnapshotOptions *)options
+                         completion:(void (^)(MLNImage *_Nullable image,
+                                              NSArray<NSString *> *attributions,
+                                              MLNSnapshotProjection *_Nullable projection,
+                                              NSString *_Nullable error))completion {
+  MLNFFIMap *map = _map;
+  mln_map handle = map.handle;
+  mln_render_session session = _session;
+  [map callAsync:^(const mln_completion *callCompletion, mln_diagnostic *diagnostic) {
+    return mln_map_request_still_image(handle, callCompletion, diagnostic);
+  }
+      consume:nil
+      completion:^(mln_status status, NSString *message) {
+        if (status != MLN_STATUS_OK) {
+          completion(nil, @[], nil, message.length ? message : MLNFFIStatusDescription(status));
+          return;
+        }
+
+        // The view the image was rendered with, from its frame result, as
+        // classic captured the transform state after rendering.
+        mln_map_view view = [map snapshot].view;
+        mln_render_frame_batch batch = MLN_HANDLE_NULL;
+        mln_render_frame_batch_view results = {sizeof(mln_render_frame_batch_view)};
+        mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+        if (mln_render_session_drain_frame_results(session, &batch, &results, &diagnostic) ==
+            MLN_STATUS_OK) {
+          for (size_t i = 0; i < results.result_count; i++) {
+            const mln_render_frame_result *result = MLN_STRIDED_AT(
+                mln_render_frame_result, results.results, results.result_size, i);
+            if (result->token == MLN_FRAME_DEMAND_TOKEN_STILL_IMAGE &&
+                result->disposition == MLN_RENDER_RESULT_RENDERED) {
+              view = result->view;
+            }
+          }
+          mln_render_frame_batch_release(batch);
+        }
+        MLNSnapshotProjection *projection = [[MLNSnapshotProjection alloc] initWithView:view];
+
+        // Collect all source attributions
+        NSMutableArray<NSString *> *attributions = [NSMutableArray array];
+        for (MLNFFISourceInfo *source in [map styleSources]) {
+          if (source.attribution.length) {
+            [attributions addObject:source.attribution];
+          }
+        }
+
+        __block NSMutableData *pixels;
+        __block uint32_t width = 0;
+        __block uint32_t height = 0;
+        [map callAsync:^(const mln_completion *callCompletion, mln_diagnostic *diagnostic) {
+          return mln_render_session_read_texture(session, callCompletion, diagnostic);
+        }
+            consume:^(const mln_completion_result *result) {
+              if (!result->value) {
+                return;
+              }
+              const mln_texture_readback_result *readback =
+                  (const mln_texture_readback_result *)result->value;
+              width = readback->info.width;
+              height = readback->info.height;
+              // Tightly packed premultiplied RGBA8, as mln::PremultipliedImage.
+              pixels = [NSMutableData dataWithLength:(NSUInteger)width * height * 4];
+              const uint8_t *source = (const uint8_t *)readback->data.data;
+              for (uint32_t row = 0; row < height; row++) {
+                memcpy((uint8_t *)pixels.mutableBytes + (size_t)row * width * 4,
+                       source + (size_t)row * readback->info.stride, (size_t)width * 4);
+              }
+            }
+            completion:^(mln_status readStatus, NSString *readMessage) {
+              if (readStatus != MLN_STATUS_OK || !pixels) {
+                completion(nil, attributions, nil,
+                           readMessage.length ? readMessage : MLNFFIStatusDescription(readStatus));
+                return;
+              }
+#if TARGET_OS_IPHONE
+              MLNImage *mglImage = [[MLNImage alloc] initWithMLNPremultipliedImage:pixels
+                                                                             width:width
+                                                                            height:height
+                                                                             scale:options.scale];
+#else
+              MLNImage *mglImage = [[MLNImage alloc] initWithMLNPremultipliedImage:pixels
+                                                                             width:width
+                                                                            height:height];
+              mglImage.size = NSMakeSize(mglImage.size.width / options.scale,
+                                         mglImage.size.height / options.scale);
+#endif
+              completion(mglImage, attributions, projection, nil);
+            }];
+      }];
+}
+
+MLNImage *MLNAttributedSnapshot(NSArray<NSString *> *attributions, MLNImage *mglImage,
                                 MLNMapSnapshotOptions *options, void (^overlayHandler)()) {
   NSArray<MLNAttributionInfo *> *attributionInfo =
       MLNAttributionInfosFromAttributions(attributions);
@@ -663,9 +909,8 @@ MLNImage *MLNAttributedSnapshot(mln::MapSnapshotter::Attributions attributions, 
 }
 
 MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshotOptions *options,
-                                              mln::MapSnapshotter::Attributions attributions,
-                                              mln::MapSnapshotter::PointForFn pointForFn,
-                                              mln::MapSnapshotter::LatLngForFn latLngForFn,
+                                              NSArray<NSString *> *attributions,
+                                              MLNSnapshotProjection *projection,
                                               MLNMapSnapshotOverlayHandler overlayHandler,
                                               NSError *_Nullable *outError) {
   MLNImage *compositedImage = MLNAttributedSnapshot(attributions, mglImage, options, ^{
@@ -680,8 +925,7 @@ MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshot
     MLNMapSnapshotOverlay *snapshotOverlay =
         [[MLNMapSnapshotOverlay alloc] initWithContext:context
                                                  scale:options.scale
-                                            pointForFn:pointForFn
-                                           latLngForFn:latLngForFn];
+                                            projection:projection];
     CGContextSaveGState(context);
     overlayHandler(snapshotOverlay);
     CGContextRestoreGState(context);
@@ -692,8 +936,7 @@ MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshot
         }
         MLNMapSnapshotOverlay *snapshotOverlay = [[MLNMapSnapshotOverlay alloc] initWithContext:context.CGContext
                                                                                           scale:options.scale
-                                                                                     pointForFn:pointForFn
-                                                                                    latLngForFn:latLngForFn];
+                                                                                     projection:projection];
         [context saveGraphicsState];
         overlayHandler(snapshotOverlay);
         [context restoreGraphicsState];
@@ -703,8 +946,7 @@ MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshot
   if (compositedImage) {
     return [[MLNMapSnapshot alloc] initWithImage:compositedImage
                                            scale:options.scale
-                                      pointForFn:pointForFn
-                                     latLngForFn:latLngForFn];
+                                      projection:projection];
   } else {
     if (outError) {
       NSDictionary *userInfo =
@@ -718,7 +960,7 @@ MLNMapSnapshot *MLNSnapshotWithDecoratedImage(MLNImage *mglImage, MLNMapSnapshot
 }
 
 NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
-    mln::MapSnapshotter::Attributions attributions) {
+    NSArray<NSString *> *attributions) {
   NSMutableArray *infos = [NSMutableArray array];
 
 #if TARGET_OS_IPHONE
@@ -728,8 +970,7 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
   CGFloat fontSize = [NSFont systemFontSizeForControlSize:NSControlSizeMini];
   NSColor *attributeFontColor = [NSColor blackColor];
 #endif
-  for (auto attribution : attributions) {
-    NSString *attributionHTMLString = @(attribution.c_str());
+  for (NSString *attributionHTMLString in attributions) {
     NSArray *tileSetInfos = [MLNAttributionInfo attributionInfosFromHTMLString:attributionHTMLString
                                                                       fontSize:fontSize
                                                                      linkColor:attributeFontColor];
@@ -860,86 +1101,203 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
 - (void)cancel {
   MLNLogInfo(@"Cancelling snapshotter.");
 
-  if (_mbglMapSnapshotter) {
-    _mbglMapSnapshotter->cancel();
+  _startGeneration++;
+  _styleCompletion = nil;
+  [self releaseMap];
+}
+
+- (void)releaseMap {
+  [_style mgl_invalidate];
+  _style = nil;
+  if (_session != MLN_HANDLE_NULL) {
+    mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+    mln_render_session_dispose(_session, NULL, &diagnostic);
+    _session = MLN_HANDLE_NULL;
   }
-  _mbglMapSnapshotter.reset();
-  _delegateHost.reset();
+  [_map invalidate];
+  _map = nil;
 }
 
 - (void)configureWithOptions:(MLNMapSnapshotOptions *)options {
-  auto mbglFileSource = [[MLNOfflineStorage sharedOfflineStorage] mbglFileSource];
+  _startGeneration++;
+  [self releaseMap];
+  _installedImages = [NSMutableSet set];
+  _styleState = MLNSnapshotStyleStateLoading;
+  _styleError = nil;
+  _styleCompletion = nil;
 
   // Size; taking into account the minimum texture size for OpenGL ES
   // For non retina screens the ratio is 1:1 MLNSnapshotterMinimumPixelSize
-  mln::Size size = {
-      static_cast<uint32_t>(MAX(options.size.width, MLNSnapshotterMinimumPixelSize)),
-      static_cast<uint32_t>(MAX(options.size.height, MLNSnapshotterMinimumPixelSize))};
+  CGSize size = CGSizeMake(MAX(options.size.width, MLNSnapshotterMinimumPixelSize),
+                           MAX(options.size.height, MLNSnapshotterMinimumPixelSize));
 
   float pixelRatio = MAX(options.scale, 1);
 
-  // App-global configuration
-  MLNRendererConfiguration *config = [MLNRendererConfiguration currentConfiguration];
-
-  auto tileServerOptions = [[MLNSettings sharedSettings] tileServerOptionsInternal];
-  mln::ResourceOptions resourceOptions;
-  resourceOptions.withTileServerOptions(*tileServerOptions)
-      .withCachePath(MLNOfflineStorage.sharedOfflineStorage.databasePath.UTF8String)
-      .withAssetPath(NSBundle.mainBundle.resourceURL.path.UTF8String);
-  mln::ClientOptions clientOptions;
-
-  auto apiKey = [[MLNSettings sharedSettings] apiKey];
-  if (apiKey) {
-    resourceOptions.withApiKey([apiKey UTF8String]);
+  // Classic passed the tile server options, API key and local font family
+  // here. The C API's runtime takes none of them (C_API_GAPS.md).
+  _map = [[MLNFFIMap alloc] initWithSize:size scaleFactor:pixelRatio mode:MLN_MAP_MODE_STATIC];
+  if (!_map) {
+    return;
   }
+  _map.eventObserver = self;
+  _style = [[MLNStyle alloc] initWithMap:_map stylable:self];
 
-  // Create the snapshotter
-  std::optional<std::string> localFontFamilyName =
-      config.localFontFamilyName ? std::optional(std::string(config.localFontFamilyName.UTF8String))
-                                 : std::nullopt;
-  _delegateHost = std::make_unique<MLNMapSnapshotterDelegateHost>(self);
-  _mbglMapSnapshotter = std::make_unique<mln::MapSnapshotter>(
-      size, pixelRatio, resourceOptions, clientOptions, *_delegateHost, localFontFamilyName);
+  mln_graphics_device_texture_descriptor descriptor = {
+      sizeof(mln_graphics_device_texture_descriptor)};
+  descriptor.extent = {(uint32_t)size.width, (uint32_t)size.height, pixelRatio};
+  mln_render_session_attach_options attachOptions = {sizeof(mln_render_session_attach_options)};
+  attachOptions.driver = MLN_RENDER_DRIVER_CORE_WORKER;
+  mln_map handle = _map.handle;
+  mln_graphics_device device = MLNSnapshotterGraphicsDevice();
+  __block mln_render_session session = MLN_HANDLE_NULL;
+  __block mln_render_session *outSession = &session;
+  NSString *message;
+  if ([_map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+        return mln_map_attach_graphics_device_texture(handle, device, &descriptor, &attachOptions,
+                                                      outSession, completion, diagnostic);
+      }
+          consume:nil
+          message:&message] != MLN_STATUS_OK) {
+    MLNLogError(@"Failed to attach the snapshot render target: %@", message);
+  }
+  _session = session;
 
-  _mbglMapSnapshotter->setStyleURL(std::string(options.styleURL.absoluteString.UTF8String));
+  [_map loadStyleURL:options.styleURL.absoluteString message:nil];
 
   // Camera options
-  mln::CameraOptions cameraOptions;
+  mln_camera_update update = {sizeof(mln_camera_update)};
+  update.mode = MLN_CAMERA_UPDATE_MODE_JUMP;
+  update.camera.size = sizeof(mln_camera_options);
   if (CLLocationCoordinate2DIsValid(options.camera.centerCoordinate)) {
-    cameraOptions.center = MLNLatLngFromLocationCoordinate2D(options.camera.centerCoordinate);
+    update.camera.fields |= MLN_CAMERA_OPTION_CENTER;
+    update.camera.center = MLNLatLngFromLocationCoordinate2D(options.camera.centerCoordinate);
   }
   if (options.camera.heading >= 0) {
-    cameraOptions.bearing = MAX(0, options.camera.heading);
+    update.camera.fields |= MLN_CAMERA_OPTION_BEARING;
+    update.camera.bearing = MAX(0, options.camera.heading);
   }
   if (options.zoomLevel >= 0) {
-    cameraOptions.zoom = MAX(0, options.zoomLevel);
+    update.camera.fields |= MLN_CAMERA_OPTION_ZOOM;
+    update.camera.zoom = MAX(0, options.zoomLevel);
   }
   if (options.camera.pitch >= 0) {
-    cameraOptions.pitch = MAX(0, options.camera.pitch);
+    update.camera.fields |= MLN_CAMERA_OPTION_PITCH;
+    update.camera.pitch = MAX(0, options.camera.pitch);
   }
   if (options.camera.roll != 0) {
-    cameraOptions.roll = options.camera.roll;
+    update.camera.fields |= MLN_CAMERA_OPTION_ROLL;
+    update.camera.roll = options.camera.roll;
   }
-  if (cameraOptions != mln::CameraOptions()) {
-    _mbglMapSnapshotter->setCameraOptions(cameraOptions);
+  if (update.camera.fields) {
+    // MapSnapshotter::setCameraOptions applied the region padding, zero here.
+    update.camera.fields |= MLN_CAMERA_OPTION_PADDING;
+    [_map perform:@"set the snapshot camera"
+           submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+             return mln_map_update_camera(handle, &update, completion, diagnostic);
+           }];
   }
 
-  // Region
+  // Region: MapSnapshotter::setRegion jumped to cameraForLatLngs of its corners.
   if (!MLNCoordinateBoundsIsEmpty(options.coordinateBounds)) {
-    _mbglMapSnapshotter->setRegion(MLNLatLngBoundsFromCoordinateBounds(options.coordinateBounds));
-  }
-
-  // Annotations
-  if (_annotationsToInstall) {
-    [self installAnnotations:_annotationsToInstall];
+    std::vector<mln_lat_lng> corners = {
+        MLNLatLngFromLocationCoordinate2D(options.coordinateBounds.sw),
+        MLNLatLngFromLocationCoordinate2D(options.coordinateBounds.ne)};
+    mln_camera_fit_options fitOptions = {sizeof(mln_camera_fit_options)};
+    fitOptions.fields = MLN_CAMERA_FIT_OPTION_PADDING;
+    __block mln_camera_options camera = {sizeof(mln_camera_options)};
+    __block BOOL hasCamera = NO;
+    [_map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+      return mln_map_camera_for_lat_lngs(handle, corners.data(), corners.size(), &fitOptions,
+                                         completion, diagnostic);
+    }
+        consume:^(const mln_completion_result *result) {
+          if (result->value) {
+            camera = *(const mln_camera_options *)result->value;
+            hasCamera = YES;
+          }
+        }
+        message:nil];
+    if (hasCamera) {
+      mln_camera_update regionUpdate = {sizeof(mln_camera_update)};
+      regionUpdate.mode = MLN_CAMERA_UPDATE_MODE_JUMP;
+      regionUpdate.camera = camera;
+      regionUpdate.camera.size = sizeof(mln_camera_options);
+      [_map perform:@"set the snapshot region"
+             submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+               return mln_map_update_camera(handle, &regionUpdate, completion, diagnostic);
+             }];
+    }
   }
 }
 
 - (MLNStyle *)style {
-  if (!_mbglMapSnapshotter) {
-    return nil;
+  return _style;
+}
+
+// MARK: - MLNFFIStylable
+
+- (uint64_t)mgl_renderSession {
+  return _session;
+}
+
+- (void)mgl_setNeedsRerender {
+  // A static map renders only when a still image is requested.
+}
+
+// MARK: - MLNFFIMapEventObserver
+
+- (void)ffiMap:(MLNFFIMap *)map didReceiveEvent:(MLNFFIEvent *)event {
+  if (map != _map) {
+    return;
   }
-  return [[MLNStyle alloc] initWithRawStyle:&_mbglMapSnapshotter->getStyle() stylable:self];
+  switch (event.type) {
+    case MLN_RUNTIME_EVENT_MAP_STYLE_LOADED: {
+      _styleState = MLNSnapshotStyleStateLoaded;
+      if ([self.delegate respondsToSelector:@selector(mapSnapshotter:didFinishLoadingStyle:)]) {
+        [self.delegate mapSnapshotter:self didFinishLoadingStyle:self.style];
+      }
+      void (^styleCompletion)(NSString *) = _styleCompletion;
+      _styleCompletion = nil;
+      if (styleCompletion) {
+        styleCompletion(nil);
+      }
+      break;
+    }
+    case MLN_RUNTIME_EVENT_MAP_LOADING_FAILED: {
+      if (_styleState == MLNSnapshotStyleStateLoaded) {
+        break;
+      }
+      _styleState = MLNSnapshotStyleStateFailed;
+      _styleError = event.message;
+      if ([self.delegate respondsToSelector:@selector(mapSnapshotterDidFail:withError:)]) {
+        NSDictionary *userInfo = @{
+          NSLocalizedDescriptionKey : NSLocalizedStringWithDefaultValue(
+              @"SNAPSHOT_LOAD_STYLE_FAILED_DESC", nil, nil,
+              @"The snapshot failed because the style can’t be loaded.",
+              @"User-friendly error description"),
+          NSLocalizedFailureReasonErrorKey : event.message,
+        };
+        NSError *error = [NSError errorWithDomain:MLNErrorDomain
+                                             code:MLNErrorCodeLoadStyleFailed
+                                         userInfo:userInfo];
+        [self.delegate mapSnapshotterDidFail:self withError:error];
+      }
+      void (^styleCompletion)(NSString *) = _styleCompletion;
+      _styleCompletion = nil;
+      if (styleCompletion) {
+        styleCompletion(event.message);
+      }
+      break;
+    }
+    case MLN_RUNTIME_EVENT_MAP_STYLE_IMAGE_MISSING:
+      // The C API reports the missing image's ID as the event message.
+      if ([self.delegate respondsToSelector:@selector(mapSnapshotter:didFailLoadingImageNamed:)]) {
+        [self.delegate mapSnapshotter:self didFailLoadingImageNamed:event.message];
+      }
+      break;
+    default:
+      break;
+  }
 }
 
 - (double)alphaForShapeAnnotation:(MLNShape *)annotation {
@@ -949,21 +1307,21 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
   return 1.0;
 }
 
-- (mln::Color)strokeColorForShapeAnnotation:(MLNShape *)annotation {
+- (MLNColor *)strokeColorForShapeAnnotation:(MLNShape *)annotation {
   if ([self.delegate respondsToSelector:@selector(mapSnapshotter:strokeColorForShapeAnnotation:)]) {
     MLNColor *color = [self.delegate mapSnapshotter:self strokeColorForShapeAnnotation:annotation];
-    return color.mgl_color;
+    return color;
   }
 
-  return mln::Color::white();
+  return [MLNColor whiteColor];
 }
 
-- (mln::Color)fillColorForPolygonAnnotation:(MLNPolygon *)annotation {
+- (MLNColor *)fillColorForPolygonAnnotation:(MLNPolygon *)annotation {
   if ([self.delegate respondsToSelector:@selector(mapSnapshotter:fillColorForPolygonAnnotation:)]) {
     MLNColor *color = [self.delegate mapSnapshotter:self fillColorForPolygonAnnotation:annotation];
-    return color.mgl_color;
+    return color;
   }
-  return mln::Color::white();
+  return [MLNColor whiteColor];
 }
 
 - (CGFloat)lineWidthForPolylineAnnotation:(MLNPolyline *)annotation {

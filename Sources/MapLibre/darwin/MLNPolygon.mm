@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNPolygon.mm at ios-v7.0.0
+
 #import "MLNPolygon_Private.h"
 
 #import "MLNGeometry_Private.h"
@@ -5,9 +7,10 @@
 #import "MLNMultiPoint_Private.h"
 
 #import "MLNFeature.h"
+#import "MLNLatLngBounds.h"
+#import "MLNShape_Private.h"
 
-#import <mapbox/polylabel.hpp>
-#import <mln/util/geojson.hpp>
+#include <polylabel.hpp>
 
 @implementation MLNPolygon
 
@@ -74,23 +77,23 @@
   // pole of inaccessibility
   auto poi = mapbox::polylabel([self polygon]);
 
-  return MLNLocationCoordinate2DFromPoint(poi);
+  return CLLocationCoordinate2DMake(poi.y, poi.x);
 }
 
-- (mln::LinearRing<double>)ring {
+- (mapbox::polylabel_detail::Ring)ring {
   NSUInteger count = self.pointCount;
   CLLocationCoordinate2D *coordinates = self.coordinates;
 
-  mln::LinearRing<double> result;
+  mapbox::polylabel_detail::Ring result;
   result.reserve(self.pointCount);
   for (NSUInteger i = 0; i < count; i++) {
-    result.push_back(mln::Point<double>(coordinates[i].longitude, coordinates[i].latitude));
+    result.push_back({coordinates[i].longitude, coordinates[i].latitude});
   }
   return result;
 }
 
-- (mln::Polygon<double>)polygon {
-  mln::Polygon<double> geometry;
+- (mapbox::polylabel_detail::Polygon)polygon {
+  mapbox::polylabel_detail::Polygon geometry;
   geometry.push_back(self.ring);
   for (MLNPolygon *polygon in self.interiorPolygons) {
     geometry.push_back(polygon.ring);
@@ -98,17 +101,8 @@
   return geometry;
 }
 
-- (mln::Geometry<double>)geometryObject {
-  return [self polygon];
-}
-
-- (mln::Annotation)annotationObjectWithDelegate:(id<MLNMultiPointDelegate>)delegate {
-  mln::FillAnnotation annotation{[self polygon]};
-  annotation.opacity = {static_cast<float>([delegate alphaForShapeAnnotation:self])};
-  annotation.outlineColor = {[delegate strokeColorForShapeAnnotation:self]};
-  annotation.color = {[delegate fillColorForPolygonAnnotation:self]};
-
-  return annotation;
+- (id)geometryObject {
+  return @{@"type" : @"Polygon", @"coordinates" : self.mgl_coordinates};
 }
 
 - (NSDictionary *)geoJSONDictionary {
@@ -164,10 +158,10 @@
   if (self = [super init]) {
     _polygons = polygons;
 
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
 
     for (MLNPolygon *polygon in _polygons) {
-      bounds.extend(MLNLatLngBoundsFromCoordinateBounds(polygon.overlayBounds));
+      MLNLatLngBoundsExtendBounds(bounds, MLNLatLngBoundsFromCoordinateBounds(polygon.overlayBounds));
     }
     _overlayBounds = MLNCoordinateBoundsFromLatLngBounds(bounds);
   }
@@ -181,10 +175,10 @@
         [NSSet setWithArray:@[ [NSDictionary class], [NSArray class], [MLNPolygon class] ]];
     _polygons = [decoder decodeObjectOfClasses:polygonsClasses forKey:@"polygons"];
 
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
 
     for (MLNPolygon *polygon in _polygons) {
-      bounds.extend(MLNLatLngBoundsFromCoordinateBounds(polygon.overlayBounds));
+      MLNLatLngBoundsExtendBounds(bounds, MLNLatLngBoundsFromCoordinateBounds(polygon.overlayBounds));
     }
     _overlayBounds = MLNCoordinateBoundsFromLatLngBounds(bounds);
   }
@@ -222,22 +216,12 @@
   return MLNCoordinateBoundsIntersectsCoordinateBounds(_overlayBounds, overlayBounds);
 }
 
-- (mln::MultiPolygon<double>)multiPolygon {
-  mln::MultiPolygon<double> multiPolygon;
-  multiPolygon.reserve(self.polygons.count);
+- (id)geometryObject {
+  NSMutableArray *coordinates = [[NSMutableArray alloc] initWithCapacity:self.polygons.count];
   for (MLNPolygon *polygon in self.polygons) {
-    mln::Polygon<double> geometry;
-    geometry.push_back(polygon.ring);
-    for (MLNPolygon *interiorPolygon in polygon.interiorPolygons) {
-      geometry.push_back(interiorPolygon.ring);
-    }
-    multiPolygon.push_back(geometry);
+    [coordinates addObject:polygon.mgl_coordinates];
   }
-  return multiPolygon;
-}
-
-- (mln::Geometry<double>)geometryObject {
-  return [self multiPolygon];
+  return @{@"type" : @"MultiPolygon", @"coordinates" : coordinates};
 }
 
 - (NSDictionary *)geoJSONDictionary {

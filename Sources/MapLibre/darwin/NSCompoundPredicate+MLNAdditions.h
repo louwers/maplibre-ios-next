@@ -1,6 +1,7 @@
+// Based on platform/darwin/src/NSCompoundPredicate+MLNAdditions.h at ios-v7.0.0
+
 #import <Foundation/Foundation.h>
 
-#include <mln/style/filter.hpp>
 
 @interface NSCompoundPredicate (MLNAdditions)
 

@@ -1,4 +1,6 @@
-#import "MLNFoundation_Private.h"
+// Based on platform/darwin/src/MLNFoundation.mm at ios-v7.0.0
+//
+// Classic defined MLNInitializeRunLoop() here, which created the core's run
+// loop on the main thread. The C API's runtime runs its own threads.
 
-/// Initializes the run loop shim that lives on the main thread.
-void MLNInitializeRunLoop() { static mln::util::RunLoop runLoop; }
+#import "MLNFoundation_Private.h"

@@ -1,26 +1,21 @@
-#import "MLNRenderingStats.h"
+// Based on platform/darwin/src/MLNRenderingStats_Private.h at ios-v7.0.0
+//
+// Classic filled MLNRenderingStats from mbgl::gfx::RenderingStats. The C API
+// reports only a frame's encoding and rendering time and its frame and draw
+// call counts (mln_rendering_stats), and no rendered feature information, so
+// the other properties stay zero (C_API_GAPS.md).
 
-#import <mln/gfx/rendering_stats.hpp>
+#import <MaplibreNativeC/maplibre_native_c.h>
+
+#import "MLNRenderingStats.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface MLNOverscaledTileID (Private)
-- (instancetype)initWithTileID:(const mln::OverscaledTileID &)tileID;
-@end
-
-@interface MLNSourceLayerID (Private)
-- (instancetype)initWithID:(const mln::gfx::RenderingStats::SourceLayerID &)id_;
-- (id)copyWithZone:(NSZone *)zone;
-@end
-
-@interface MLNFeatureInfo (Private)
-- (instancetype)initWithFeatureId:(const std::string &)id_
-                      FeatureInfo:(const mln::gfx::RenderingStats::FeatureInfo &)info;
-@end
-
 @interface MLNRenderingStats (Private)
-- (void)setCoreData:(const mln::gfx::RenderingStats &)stats;
-- (void)setFeatureInfo:(const mln::gfx::RenderingStats &)stats;
+
+/// Takes the values the C API reports with a render-frame event.
+- (void)mgl_setFFIStats:(mln_rendering_stats)stats;
+
 @end
 
 NS_ASSUME_NONNULL_END

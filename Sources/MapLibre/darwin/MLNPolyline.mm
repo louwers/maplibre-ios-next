@@ -1,13 +1,15 @@
+// Based on platform/darwin/src/MLNPolyline.mm at ios-v7.0.0
+
 #import "MLNPolyline_Private.h"
 
 #import "MLNGeometry_Private.h"
 #import "MLNMultiPoint_Private.h"
 
+#import "MLNCoreGeometry.h"
 #import "MLNFeature.h"
+#import "MLNLatLngBounds.h"
 #import "MLNLoggingConfiguration_Private.h"
-
-#import <mapbox/polylabel.hpp>
-#import <mln/util/geojson.hpp>
+#import "MLNShape_Private.h"
 
 @implementation MLNPolyline
 
@@ -22,30 +24,8 @@
   return [[self alloc] initWithCoordinates:coords count:count];
 }
 
-- (mln::LineString<double>)lineString {
-  NSUInteger count = self.pointCount;
-  CLLocationCoordinate2D *coordinates = self.coordinates;
-
-  mln::LineString<double> geometry;
-  geometry.reserve(self.pointCount);
-  for (NSUInteger i = 0; i < count; i++) {
-    geometry.push_back(mln::Point<double>(coordinates[i].longitude, coordinates[i].latitude));
-  }
-
-  return geometry;
-}
-
-- (mln::Annotation)annotationObjectWithDelegate:(id<MLNMultiPointDelegate>)delegate {
-  mln::LineAnnotation annotation{[self lineString]};
-  annotation.opacity = {static_cast<float>([delegate alphaForShapeAnnotation:self])};
-  annotation.color = {[delegate strokeColorForShapeAnnotation:self]};
-  annotation.width = {static_cast<float>([delegate lineWidthForPolylineAnnotation:self])};
-
-  return annotation;
-}
-
-- (mln::Geometry<double>)geometryObject {
-  return [self lineString];
+- (id)geometryObject {
+  return @{@"type" : @"LineString", @"coordinates" : self.mgl_coordinates};
 }
 
 - (NSDictionary *)geoJSONDictionary {
@@ -90,12 +70,12 @@
         to = MLNRadianCoordinateFromLocationCoordinate(coordinates[i - 1]);
         CLLocationDirection direction = [self direction:from to:to] - 180;
         MLNRadianCoordinate2D otherCoordinate = MLNRadianCoordinateAtDistanceFacingDirection(
-            from, overshoot / mln::util::EARTH_RADIUS_M, MLNRadiansFromDegrees(direction));
+            from, overshoot / MLNCoreEarthRadiusMeters, MLNRadiansFromDegrees(direction));
         return CLLocationCoordinate2DMake(MLNDegreesFromRadians(otherCoordinate.latitude),
                                           MLNDegreesFromRadians(otherCoordinate.longitude));
       }
 
-      traveled += (MLNDistanceBetweenRadianCoordinates(from, to) * mln::util::EARTH_RADIUS_M);
+      traveled += (MLNDistanceBetweenRadianCoordinates(from, to) * MLNCoreEarthRadiusMeters);
     }
   }
 
@@ -112,7 +92,7 @@
     length += (MLNDistanceBetweenRadianCoordinates(
                    MLNRadianCoordinateFromLocationCoordinate(coordinates[i]),
                    MLNRadianCoordinateFromLocationCoordinate(coordinates[i + 1])) *
-               mln::util::EARTH_RADIUS_M);
+               MLNCoreEarthRadiusMeters);
   }
 
   return length;
@@ -145,10 +125,10 @@
   if (self = [super init]) {
     _polylines = polylines;
 
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
 
     for (MLNPolyline *polyline in _polylines) {
-      bounds.extend(MLNLatLngBoundsFromCoordinateBounds(polyline.overlayBounds));
+      MLNLatLngBoundsExtendBounds(bounds, MLNLatLngBoundsFromCoordinateBounds(polyline.overlayBounds));
     }
     _overlayBounds = MLNCoordinateBoundsFromLatLngBounds(bounds);
   }
@@ -166,10 +146,10 @@
         [NSSet setWithArray:@[ [NSDictionary class], [NSArray class], [MLNPolyline class] ]];
     _polylines = [decoder decodeObjectOfClasses:polylinesClasses forKey:@"polylines"];
 
-    mln::LatLngBounds bounds = mln::LatLngBounds::empty();
+    mln_lat_lng_bounds bounds = MLNLatLngBoundsEmpty();
 
     for (MLNPolyline *polyline in _polylines) {
-      bounds.extend(MLNLatLngBoundsFromCoordinateBounds(polyline.overlayBounds));
+      MLNLatLngBoundsExtendBounds(bounds, MLNLatLngBoundsFromCoordinateBounds(polyline.overlayBounds));
     }
     _overlayBounds = MLNCoordinateBoundsFromLatLngBounds(bounds);
   }
@@ -211,13 +191,12 @@
   return MLNCoordinateBoundsIntersectsCoordinateBounds(_overlayBounds, overlayBounds);
 }
 
-- (mln::Geometry<double>)geometryObject {
-  mln::MultiLineString<double> multiLineString;
-  multiLineString.reserve(self.polylines.count);
+- (id)geometryObject {
+  NSMutableArray *coordinates = [NSMutableArray arrayWithCapacity:self.polylines.count];
   for (MLNPolyline *polyline in self.polylines) {
-    multiLineString.push_back([polyline lineString]);
+    [coordinates addObject:polyline.mgl_coordinates];
   }
-  return multiLineString;
+  return @{@"type" : @"MultiLineString", @"coordinates" : coordinates};
 }
 
 - (NSDictionary *)geoJSONDictionary {

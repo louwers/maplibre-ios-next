@@ -1,36 +1,34 @@
+// Based on platform/darwin/src/NSPredicate+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSPredicate+MLNPrivateAdditions.h"
 
 #import "MLNLoggingConfiguration_Private.h"
+#import "MLNFFI.h"
 #import "MLNStyleValue_Private.h"
-#import "MLNValueEvaluator.h"
-
-#include <mln/style/conversion/filter.hpp>
 
 @implementation NSPredicate (MLNPrivateAdditions)
 
-- (mln::style::Filter)mgl_filter {
-  mln::style::conversion::Error valueError;
-  NSArray *jsonObject = self.mgl_jsonExpressionObject;
-  auto value = mln::style::conversion::convert<mln::style::Filter>(
-      mln::style::conversion::makeConvertible(jsonObject), valueError);
+- (id)mgl_filterJSONObject {
+  id jsonObject = self.mgl_jsonExpressionObject;
 
-  if (!value) {
+  // Parse the filter as the core's Filter conversion parsed an expression
+  // filter: as an expression that must produce a boolean.
+  mln_style_expression_options options = {sizeof(mln_style_expression_options)};
+  options.fields = MLN_STYLE_EXPRESSION_OPTION_EXPECTED_TYPE;
+  options.expected_type.kind = MLN_STYLE_EXPRESSION_TYPE_BOOLEAN;
+  mln_style_expression expression = MLN_HANDLE_NULL;
+  mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+  diagnostic.message[0] = '\0';
+  NSString *json = MLNFFIJSONStringFromObject(jsonObject);
+  if (mln_style_expression_create(MLNFFIBufferView(json), &options, &expression, &diagnostic) !=
+      MLN_STATUS_OK) {
     [NSException raise:NSInvalidArgumentException
-                format:@"Invalid filter value: %@", @(valueError.message.c_str())];
-    return {};
-  }
-  mln::style::Filter filter = std::move(*value);
-
-  return filter;
-}
-
-+ (instancetype)mgl_predicateWithFilter:(mln::style::Filter)filter {
-  if (filter.expression) {
-    id jsonObject = MLNJSONObjectFromMBGLExpression(**filter.expression);
-    return [NSPredicate predicateWithMLNJSONObject:jsonObject];
-  } else {
+                format:@"Invalid filter value: %@", @(diagnostic.message)];
     return nil;
   }
+  mln_style_expression_release(expression);
+
+  return jsonObject;
 }
 
 @end

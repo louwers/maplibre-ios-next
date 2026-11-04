@@ -1,48 +1,25 @@
+// Based on platform/darwin/src/MLNFeature_Private.h at ios-v7.0.0
+//
+// Classic converted features to and from mln::GeoJSONFeature. Conversion from
+// GeoJSON now lives in MLNGeoJSON.h (MLNFeatureFromGeoJSONFeature,
+// MLNFeaturesFromGeoJSONFeatures, MLNShapeFromGeoJSONObject); the functions
+// here build the Foundation GeoJSON objects that replace mln::GeoJSONFeature.
+
 #import "MLNFeature.h"
 #import "MLNFoundation.h"
 #import "MLNShape.h"
 
-#import <mln/style/conversion/geojson.hpp>
-#import <mln/util/feature.hpp>
-#import <mln/util/geo.hpp>
-
 NS_ASSUME_NONNULL_BEGIN
 
 /**
- Returns an array of ``MLNFeature`` objects converted from the given vector of
- vector tile features.
+ Returns the GeoJSON Feature object for a feature with the given geometry
+ object, identifier and attributes, as classic's mbglFeature() built the
+ mln::GeoJSONFeature: the identifier as `mgl_featureIdentifier` converted it
+ (omitted if it is not a string or number) and the attributes as
+ `mgl_propertyMap` converted them.
  */
-MLN_EXPORT
-NSArray<MLNShape<MLNFeature> *> *MLNFeaturesFromMBGLFeatures(
-    const std::vector<mln::Feature> &features);
-
-/**
- Returns an array of ``MLNFeature`` objects converted from the given vector of
- vector tile features.
- */
-MLN_EXPORT
-NSArray<MLNShape<MLNFeature> *> *MLNFeaturesFromMBGLFeatures(
-    const std::vector<mln::GeoJSONFeature> &features);
-
-/**
- Returns an ``MLNFeature`` object converted from the given mln::GeoJSONFeature
- */
-MLN_EXPORT
-id<MLNFeature> MLNFeatureFromMBGLFeature(const mln::GeoJSONFeature &feature);
-
-/**
- Returns an ``MLNShape`` representing the given geojson. The shape can be
- a feature, a collection of features, or a geometry.
- */
-MLNShape *MLNShapeFromGeoJSON(const mapbox::geojson::geojson &geojson);
-
-/**
- Takes an `mln::GeoJSONFeature` object, an identifer, and attributes dictionary and
- returns the feature object with converted `mln::FeatureIdentifier` and
- `mln::PropertyMap` properties.
- */
-mln::GeoJSONFeature mbglFeature(mln::GeoJSONFeature feature, id identifier,
-                                NSDictionary *attributes);
+NSDictionary<NSString *, id> *MLNGeoJSONFeatureObject(id geometry, id _Nullable identifier,
+                                                      NSDictionary *attributes);
 
 /**
  Returns an `NSDictionary` representation of an ``MLNFeature``.
@@ -76,15 +53,17 @@ NS_ASSUME_NONNULL_END
     [coder encodeObject:_attributes forKey:@"attributes"]; \
   }
 
-#define MLN_DEFINE_FEATURE_IS_EQUAL()                                                     \
-  -(BOOL)isEqual : (id)other {                                                            \
-    if (other == self) return YES;                                                        \
-    if (![other isKindOfClass:[self class]]) return NO;                                   \
-    __typeof(self) otherFeature = other;                                                  \
-    return [super isEqual:other] && [self geoJSONObject] == [otherFeature geoJSONObject]; \
-  }                                                                                       \
-  -(NSUInteger)hash {                                                                     \
-    return [super hash] + [[self geoJSONDictionary] hash];                                \
+// Classic compared the mln::GeoJSON objects; this compares the GeoJSON objects
+// that replace them.
+#define MLN_DEFINE_FEATURE_IS_EQUAL()                                                       \
+  -(BOOL)isEqual : (id)other {                                                              \
+    if (other == self) return YES;                                                          \
+    if (![other isKindOfClass:[self class]]) return NO;                                     \
+    __typeof(self) otherFeature = other;                                                    \
+    return [super isEqual:other] && [[self geoJSONObject] isEqual:[otherFeature geoJSONObject]]; \
+  }                                                                                         \
+  -(NSUInteger)hash {                                                                       \
+    return [super hash] + [[self geoJSONDictionary] hash];                                  \
   }
 
 #define MLN_DEFINE_FEATURE_ATTRIBUTES_GETTER() \

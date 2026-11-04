@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSComparisonPredicate+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSComparisonPredicate+MLNAdditions.h"
 
 #import "MLNStyleValue_Private.h"
@@ -22,60 +24,6 @@
               format:@"Comparison predicate must compare an attribute (as a key path) to a "
                      @"constant or vice versa."];
   return nil;
-}
-
-- (mln::Value)mgl_constantValue {
-  NSExpression *leftExpression = self.leftExpression;
-  NSExpression *rightExpression = self.rightExpression;
-  NSExpressionType leftType = leftExpression.expressionType;
-  NSExpressionType rightType = rightExpression.expressionType;
-  mln::Value value;
-  if (leftType == NSKeyPathExpressionType && rightType == NSConstantValueExpressionType) {
-    value = rightExpression.mgl_constantMBGLValue;
-  } else if (leftType == NSConstantValueExpressionType && rightType == NSKeyPathExpressionType) {
-    value = leftExpression.mgl_constantMBGLValue;
-  } else {
-    [NSException raise:NSInvalidArgumentException
-                format:@"Comparison predicate must compare an attribute (as a key path) to a "
-                       @"constant or vice versa."];
-  }
-  return value;
-}
-
-- (mln::FeatureType)mgl_featureType {
-  NSExpression *leftExpression = self.leftExpression;
-  NSExpression *rightExpression = self.rightExpression;
-  NSExpressionType leftType = leftExpression.expressionType;
-  NSExpressionType rightType = rightExpression.expressionType;
-  mln::FeatureType type;
-  if (leftType == NSKeyPathExpressionType && rightType == NSConstantValueExpressionType) {
-    type = rightExpression.mgl_featureType;
-  } else if (leftType == NSConstantValueExpressionType && rightType == NSKeyPathExpressionType) {
-    type = leftExpression.mgl_featureType;
-  } else {
-    [NSException raise:NSInvalidArgumentException
-                format:@"Comparison predicate must compare an attribute (as a key path) to a "
-                       @"constant or vice versa."];
-  }
-  return type;
-}
-
-- (mln::FeatureIdentifier)mgl_featureIdentifier {
-  NSExpression *leftExpression = self.leftExpression;
-  NSExpression *rightExpression = self.rightExpression;
-  NSExpressionType leftType = leftExpression.expressionType;
-  NSExpressionType rightType = rightExpression.expressionType;
-  mln::FeatureIdentifier identifier;
-  if (leftType == NSKeyPathExpressionType && rightType == NSConstantValueExpressionType) {
-    identifier = rightExpression.mgl_featureIdentifier;
-  } else if (leftType == NSConstantValueExpressionType && rightType == NSKeyPathExpressionType) {
-    identifier = leftExpression.mgl_featureIdentifier;
-  } else {
-    [NSException raise:NSInvalidArgumentException
-                format:@"Comparison predicate must compare an attribute (as a key path) to a "
-                       @"constant or vice versa."];
-  }
-  return identifier;
 }
 
 @end

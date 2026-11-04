@@ -1,21 +1,19 @@
-#import "MLNFoundation_Private.h"
+// Based on platform/darwin/src/MLNShapeSource.mm at ios-v7.0.0
+
 #import "MLNShapeSource_Private.h"
 
 #import "MLNCluster.h"
-#import "MLNFeature_Private.h"
+#import "MLNFFISourceQueries.h"
+#import "MLNGeoJSON.h"
 #import "MLNLoggingConfiguration_Private.h"
-#import "MLNMapView_Private.h"
-#import "MLNShape_Private.h"
+#import "MLNMapView.h"
+#import "MLNShapeCollection.h"
 #import "MLNSource_Private.h"
 #import "MLNStyleValue_Private.h"
 #import "MLNStyle_Private.h"
 
-#import "NSPredicate+MLNPrivateAdditions.h"
+#import "NSExpression+MLNPrivateAdditions.h"
 #import "NSURL+MLNAdditions.h"
-
-#include <mln/map/map.hpp>
-#include <mln/renderer/renderer.hpp>
-#include <mln/style/sources/geojson_source.hpp>
 
 const MLNShapeSourceOption MLNShapeSourceOptionBuffer = @"MLNShapeSourceOptionBuffer";
 const MLNShapeSourceOption MLNShapeSourceOptionClusterRadius = @"MLNShapeSourceOptionClusterRadius";
@@ -37,16 +35,55 @@ const MLNShapeSourceOption MLNShapeSourceOptionLineDistanceMetrics =
 const MLNShapeSourceOption MLNShapeSourceOptionSynchronousUpdate =
     @"MLNShapeSourceOptionSynchronousUpdate";
 
-mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
+@interface MLNGeoJSONSourceOptions ()
+- (mln_geo_json_source_options *)mutableOptions;
+- (void)setClusterProperties:(NSString *)clusterProperties;
+@end
+
+@implementation MLNGeoJSONSourceOptions {
+  mln_geo_json_source_options _options;
+  // Owns the bytes that _options.cluster_properties borrows.
+  NSString *_clusterProperties;
+}
+
+- (instancetype)init {
+  if (self = [super init]) {
+    _options = (mln_geo_json_source_options){sizeof(mln_geo_json_source_options)};
+  }
+  return self;
+}
+
+- (mln_geo_json_source_options)options {
+  return _options;
+}
+
+- (mln_geo_json_source_options *)mutableOptions {
+  return &_options;
+}
+
+- (BOOL)clusters {
+  return (_options.fields & MLN_GEO_JSON_SOURCE_OPTION_CLUSTER) && _options.cluster;
+}
+
+- (void)setClusterProperties:(NSString *)clusterProperties {
+  _clusterProperties = [clusterProperties copy];
+  _options.cluster_properties = MLNFFIBufferView(_clusterProperties);
+}
+
+@end
+
+MLNGeoJSONSourceOptions *MLNGeoJSONOptionsFromDictionary(
     NSDictionary<MLNShapeSourceOption, id> *options) {
-  auto geoJSONOptions = mln::makeMutable<mln::style::GeoJSONOptions>();
+  MLNGeoJSONSourceOptions *wrapper = [[MLNGeoJSONSourceOptions alloc] init];
+  mln_geo_json_source_options *geoJSONOptions = [wrapper mutableOptions];
 
   if (NSNumber *value = options[MLNShapeSourceOptionMinimumZoomLevel]) {
     if (![value isKindOfClass:[NSNumber class]]) {
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionMaximumZoomLevel must be an NSNumber."];
     }
-    geoJSONOptions->minzoom = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_MIN_ZOOM;
+    geoJSONOptions->min_zoom = (uint8_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionMaximumZoomLevel]) {
@@ -54,7 +91,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionMaximumZoomLevel must be an NSNumber."];
     }
-    geoJSONOptions->maxzoom = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_MAX_ZOOM;
+    geoJSONOptions->max_zoom = (uint8_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionBuffer]) {
@@ -62,7 +100,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionBuffer must be an NSNumber."];
     }
-    geoJSONOptions->buffer = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_BUFFER;
+    geoJSONOptions->buffer = (uint16_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionSimplificationTolerance]) {
@@ -70,6 +109,7 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionSimplificationTolerance must be an NSNumber."];
     }
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_TOLERANCE;
     geoJSONOptions->tolerance = value.doubleValue;
   }
 
@@ -78,7 +118,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionClusterRadius must be an NSNumber."];
     }
-    geoJSONOptions->clusterRadius = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_RADIUS;
+    geoJSONOptions->cluster_radius = (uint16_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionClusterMinPoints]) {
@@ -86,7 +127,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionClusterMinPoints must be an NSNumber."];
     }
-    geoJSONOptions->clusterMinPoints = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MIN_POINTS;
+    geoJSONOptions->cluster_min_points = (uint32_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionMaximumZoomLevelForClustering]) {
@@ -94,7 +136,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionMaximumZoomLevelForClustering must be an NSNumber."];
     }
-    geoJSONOptions->clusterMaxZoom = value.integerValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_CLUSTER_MAX_ZOOM;
+    geoJSONOptions->cluster_max_zoom = (uint8_t)value.integerValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionClustered]) {
@@ -102,6 +145,7 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionClustered must be an NSNumber."];
     }
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_CLUSTER;
     geoJSONOptions->cluster = value.boolValue;
   }
 
@@ -115,6 +159,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 
     NSEnumerator *stringEnumerator = [value keyEnumerator];
     NSString *key;
+    // The style-spec clusterProperties object: {name: [reduce, map]}.
+    NSMutableDictionary *clusterProperties = [NSMutableDictionary dictionary];
 
     while (key = [stringEnumerator nextObject]) {
       NSArray *expressionsArray = value[key];
@@ -138,7 +184,7 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
                     format:@"MLNShapeSourceOptionClusterProperties array value requires two "
                            @"expression objects."];
       }
-      auto reduce = MLNClusterPropertyFromNSExpression(reduceExpression);
+      id reduce = reduceExpression.mgl_jsonExpressionObject;
       if (!reduce) {
         [NSException
              raise:NSInvalidArgumentException
@@ -152,18 +198,16 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
                     format:@"MLNShapeSourceOptionClusterProperties member value must contain a "
                            @"valid NSExpression."];
       }
-      auto map = MLNClusterPropertyFromNSExpression(mapExpression);
+      id map = mapExpression.mgl_jsonExpressionObject;
       if (!map) {
         [NSException
              raise:NSInvalidArgumentException
             format:@"Failed to convert MLNShapeSourceOptionClusterProperties map expression."];
       }
 
-      std::string keyString = std::string([key UTF8String]);
-
-      geoJSONOptions->clusterProperties.emplace(keyString,
-                                                std::make_pair(std::move(map), std::move(reduce)));
+      clusterProperties[key] = @[ reduce, map ];
     }
+    [wrapper setClusterProperties:MLNFFIJSONStringFromObject(clusterProperties)];
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionLineDistanceMetrics]) {
@@ -171,7 +215,8 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionLineDistanceMetrics must be an NSNumber."];
     }
-    geoJSONOptions->lineMetrics = value.boolValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_LINE_METRICS;
+    geoJSONOptions->line_metrics = value.boolValue;
   }
 
   if (NSNumber *value = options[MLNShapeSourceOptionSynchronousUpdate]) {
@@ -179,28 +224,33 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
       [NSException raise:NSInvalidArgumentException
                   format:@"MLNShapeSourceOptionSynchronousUpdate must be an NSNumber."];
     }
-    geoJSONOptions->synchronousUpdate = value.boolValue;
+    geoJSONOptions->fields |= MLN_GEO_JSON_SOURCE_OPTION_SYNCHRONOUS_TILING;
+    geoJSONOptions->synchronous_tiling = value.boolValue;
   }
 
-  return geoJSONOptions;
+  return wrapper;
 }
 
 @interface MLNShapeSource ()
 
 @property (nonatomic, readwrite) NSDictionary *options;
-@property (nonatomic, readonly) mln::style::GeoJSONSource *rawSource;
 
 @end
 
-@implementation MLNShapeSource
+@implementation MLNShapeSource {
+  // The options the source was created with; nil for a source of a loaded
+  // style, whose options the C API does not report.
+  MLNGeoJSONSourceOptions *_geoJSONOptions;
+  // The URL of a pending source.
+  NSString *_pendingURL;
+}
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                                URL:(NSURL *)url
                            options:(NSDictionary<NSString *, id> *)options {
-  auto geoJSONOptions = MLNGeoJSONOptionsFromDictionary(options);
-  auto source =
-      std::make_unique<mln::style::GeoJSONSource>(identifier.UTF8String, std::move(geoJSONOptions));
-  if (self = [super initWithPendingSource:std::move(source)]) {
+  MLNGeoJSONSourceOptions *geoJSONOptions = MLNGeoJSONOptionsFromDictionary(options);
+  if (self = [super initWithPendingIdentifier:identifier]) {
+    _geoJSONOptions = geoJSONOptions;
     self.URL = url;
   }
   return self;
@@ -209,10 +259,9 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 - (instancetype)initWithIdentifier:(NSString *)identifier
                              shape:(nullable MLNShape *)shape
                            options:(NSDictionary<MLNShapeSourceOption, id> *)options {
-  auto geoJSONOptions = MLNGeoJSONOptionsFromDictionary(options);
-  auto source =
-      std::make_unique<mln::style::GeoJSONSource>(identifier.UTF8String, std::move(geoJSONOptions));
-  if (self = [super initWithPendingSource:std::move(source)]) {
+  MLNGeoJSONSourceOptions *geoJSONOptions = MLNGeoJSONOptionsFromDictionary(options);
+  if (self = [super initWithPendingIdentifier:identifier]) {
+    _geoJSONOptions = geoJSONOptions;
     if ([shape isMemberOfClass:[MLNShapeCollection class]]) {
       static dispatch_once_t onceToken;
       dispatch_once(&onceToken, ^{
@@ -249,20 +298,102 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
   return [self initWithIdentifier:identifier shape:shapeCollection options:options];
 }
 
-- (mln::style::GeoJSONSource *)rawSource {
-  return (mln::style::GeoJSONSource *)super.rawSource;
+/// Prepares GeoJSON data for the C API with the source's options, as
+/// GeoJSONData::create did for setGeoJSON. Returns MLN_HANDLE_NULL on failure.
+- (mln_geo_json_source_data)mgl_preparedDataForShape:(MLNShape *)shape {
+  MLNGeoJSONSourceOptions *geoJSONOptions = _geoJSONOptions;
+  id geoJSON = shape ? MLNGeoJSONObjectFromShape(shape)
+                     : @{@"type" : @"FeatureCollection", @"features" : @[]};
+  // The C API takes only feature collections for clustered data; the core
+  // took any GeoJSON and clustered its features.
+  if (geoJSONOptions.clusters && ![geoJSON[@"type"] isEqual:@"FeatureCollection"]) {
+    NSDictionary *feature = [geoJSON[@"type"] isEqual:@"Feature"]
+                                ? geoJSON
+                                : @{@"type" : @"Feature", @"geometry" : geoJSON, @"properties" : @{}};
+    geoJSON = @{@"type" : @"FeatureCollection", @"features" : @[ feature ]};
+  }
+  NSString *json = MLNFFIJSONStringFromObject(geoJSON);
+  mln_geo_json_source_options options = geoJSONOptions.options;
+  mln_geo_json_source_data data = MLN_HANDLE_NULL;
+  mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+  diagnostic.message[0] = '\0';
+  if (mln_geo_json_source_data_create(MLNFFIBufferView(json), geoJSONOptions ? &options : NULL,
+                                      &data, &diagnostic) != MLN_STATUS_OK) {
+    MLNLogError(@"Failed to prepare the GeoJSON of source %@: %s", self.identifier,
+                diagnostic.message);
+    return MLN_HANDLE_NULL;
+  }
+  return data;
+}
+
+- (mln_status)mgl_addToMap:(MLNFFIMap *)map message:(NSString **)message {
+  mln_map handle = map.handle;
+  NSString *identifier = self.identifier;
+  if (_pendingURL) {
+    NSString *url = _pendingURL;
+    MLNGeoJSONSourceOptions *geoJSONOptions = _geoJSONOptions;
+    mln_geo_json_source_options options = geoJSONOptions.options;
+    return [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+      return mln_map_add_geo_json_source_url(handle, MLNFFIBufferView(identifier),
+                                             MLNFFIBufferView(url), geoJSONOptions ? &options : NULL,
+                                             completion, diagnostic);
+    }
+             consume:nil
+             message:message];
+  }
+  mln_geo_json_source_data data = [self mgl_preparedDataForShape:_shape];
+  if (data == MLN_HANDLE_NULL) {
+    if (message) {
+      *message = @"The source’s GeoJSON could not be prepared.";
+    }
+    return MLN_STATUS_INVALID_ARGUMENT;
+  }
+  mln_status status = [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+    return mln_map_add_geo_json_source_data(handle, MLNFFIBufferView(identifier), data, completion,
+                                            diagnostic);
+  }
+                        consume:nil
+                        message:message];
+  mln_geo_json_source_data_release(data);
+  return status;
+}
+
+- (void)mgl_willDetachFromMap:(MLNFFIMap *)map {
+  // Keep a URL the source loads from so it can be added again. Inline data of
+  // a source of a loaded style cannot be read back (C_API_GAPS.md).
+  if (!_shape && !_pendingURL) {
+    NSString *url = [map styleSourceWithIdentifier:self.identifier].URL;
+    _pendingURL = url.length ? url : nil;
+  }
 }
 
 - (NSURL *)URL {
   MLNAssertStyleSourceIsValid();
-  auto url = self.rawSource->getURL();
-  return url ? [NSURL URLWithString:@(url->c_str())] : nil;
+  NSString *url;
+  if (self.mgl_style) {
+    url = [self.mgl_map styleSourceWithIdentifier:self.identifier].URL;
+  } else {
+    url = _pendingURL;
+  }
+  return url.length ? [NSURL URLWithString:url] : nil;
 }
 
 - (void)setURL:(NSURL *)url {
   MLNAssertStyleSourceIsValid();
   if (url) {
-    self.rawSource->setURL(url.mgl_URLByStandardizingScheme.absoluteString.UTF8String);
+    NSString *urlString = url.mgl_URLByStandardizingScheme.absoluteString;
+    if (MLNFFIMap *map = self.mgl_map) {
+      mln_map handle = map.handle;
+      NSString *identifier = self.identifier;
+      [map perform:@"set the URL of a GeoJSON source"
+            submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+              return mln_map_set_geo_json_source_url(handle, MLNFFIBufferView(identifier),
+                                                     MLNFFIBufferView(urlString), completion,
+                                                     diagnostic);
+            }];
+    } else {
+      _pendingURL = urlString;
+    }
     _shape = nil;
   } else {
     self.shape = nil;
@@ -271,12 +402,26 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 
 - (void)setShape:(MLNShape *)shape {
   MLNAssertStyleSourceIsValid();
-  self.rawSource->setGeoJSON({shape.geoJSONObject});
+  if (MLNFFIMap *map = self.mgl_map) {
+    mln_geo_json_source_data data = [self mgl_preparedDataForShape:shape];
+    if (data != MLN_HANDLE_NULL) {
+      mln_map handle = map.handle;
+      NSString *identifier = self.identifier;
+      [map perform:@"set the shape of a GeoJSON source"
+            submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+              return mln_map_set_geo_json_source_data(handle, MLNFFIBufferView(identifier), data,
+                                                      completion, diagnostic);
+            }];
+      mln_geo_json_source_data_release(data);
+    }
+  } else {
+    _pendingURL = nil;
+  }
   _shape = shape;
 }
 
 - (NSString *)description {
-  if (self.rawSource) {
+  if (self.mgl_isValid) {
     return [NSString stringWithFormat:@"<%@: %p; identifier = %@; URL = %@; shape = %@>",
                                       NSStringFromClass([self class]), (void *)self,
                                       self.identifier, self.URL, self.shape];
@@ -289,17 +434,10 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 
 - (NSArray<id<MLNFeature>> *)featuresMatchingPredicate:(nullable NSPredicate *)predicate {
   MLNAssertStyleSourceIsValid();
-  std::optional<mln::style::Filter> optionalFilter;
-  if (predicate) {
-    optionalFilter = predicate.mgl_filter;
+  if (![self.stylable isKindOfClass:[MLNMapView class]]) {
+    return @[];
   }
-
-  std::vector<mln::Feature> features;
-  if ([self.stylable isKindOfClass:[MLNMapView class]]) {
-    MLNMapView *mapView = (MLNMapView *)self.stylable;
-    features = mapView.renderer->querySourceFeatures(self.rawSource->getID(), {{}, optionalFilter});
-  }
-  return MLNFeaturesFromMBGLFeatures(features);
+  return MLNFFIQuerySourceFeatures(self, nil, predicate);
 }
 
 // MARK: - Managing Feature State
@@ -328,94 +466,88 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 
 // MARK: - MLNCluster management
 
-- (std::optional<mln::FeatureExtensionValue>)
-    featureExtensionValueOfCluster:(MLNShape<MLNCluster> *)cluster
-                         extension:(std::string)extension
-                           options:(const std::map<std::string, mln::Value>)options {
+/// The result of a supercluster query for the cluster, as
+/// Renderer::queryFeatureExtensions returned it, or nil.
+- (id)featureExtensionValueOfCluster:(MLNShape<MLNCluster> *)cluster
+                           extension:(NSString *)extension
+                             options:(NSDictionary *)options {
   MLNAssertStyleSourceIsValid();
-  std::optional<mln::FeatureExtensionValue> extensionValue;
 
   // Check parameters
-  if (!self.rawSource || !self.stylable || !cluster) {
-    return extensionValue;
+  if (!self.mgl_map || !self.stylable || !cluster) {
+    return nil;
   }
 
-  auto geoJSON = [cluster geoJSONObject];
+  NSDictionary *geoJSON = MLNGeoJSONObjectFromShape(cluster);
 
-  if (!geoJSON.is<mln::GeoJSONFeature>()) {
+  if (![geoJSON[@"type"] isEqual:@"Feature"]) {
     MLNAssert(0, @"cluster geoJSON object is not a feature.");
-    return extensionValue;
+    return nil;
   }
 
-  auto clusterFeature = geoJSON.get<mln::GeoJSONFeature>();
-
-  if ([self.stylable isKindOfClass:[MLNMapView class]]) {
-    MLNMapView *mapView = (MLNMapView *)self.stylable;
-    extensionValue = mapView.renderer->queryFeatureExtensions(
-        self.rawSource->getID(), clusterFeature, "supercluster", extension, options);
+  if (![self.stylable isKindOfClass:[MLNMapView class]]) {
+    return nil;
   }
-  return extensionValue;
+  return MLNFFIQueryFeatureExtension(self, geoJSON, @"supercluster", extension, options);
+}
+
+/// The features of a feature extension result, which is a feature collection.
+static NSArray<id<MLNFeature>> *MLNFeaturesFromFeatureExtensionValue(id value) {
+  NSArray *features;
+  if ([value isKindOfClass:[NSDictionary class]] && [value[@"features"] isKindOfClass:[NSArray class]]) {
+    features = value[@"features"];
+  } else if ([value isKindOfClass:[NSArray class]]) {
+    features = value;
+  } else {
+    return @[];
+  }
+  NSMutableArray *dictionaries = [NSMutableArray arrayWithCapacity:features.count];
+  for (id feature in features) {
+    if ([feature isKindOfClass:[NSDictionary class]]) {
+      [dictionaries addObject:feature];
+    }
+  }
+  return MLNFeaturesFromGeoJSONFeatures(dictionaries);
 }
 
 - (NSArray<id<MLNFeature>> *)leavesOfCluster:(MLNPointFeatureCluster *)cluster
                                       offset:(NSUInteger)offset
                                        limit:(NSUInteger)limit {
-  const std::map<std::string, mln::Value> options = {{"limit", static_cast<uint64_t>(limit)},
-                                                     {"offset", static_cast<uint64_t>(offset)}};
+  NSDictionary *options = @{@"limit" : @(limit), @"offset" : @(offset)};
 
-  auto featureExtension = [self featureExtensionValueOfCluster:cluster
-                                                     extension:"leaves"
-                                                       options:options];
+  id featureExtension = [self featureExtensionValueOfCluster:cluster
+                                                   extension:@"leaves"
+                                                     options:options];
 
   if (!featureExtension) {
     return @[];
   }
 
-  if (!featureExtension->is<mln::FeatureCollection>()) {
-    return @[];
-  }
-
-  std::vector<mln::GeoJSONFeature> leaves = featureExtension->get<mln::FeatureCollection>();
-  return MLNFeaturesFromMBGLFeatures(leaves);
+  return MLNFeaturesFromFeatureExtensionValue(featureExtension);
 }
 
 - (NSArray<id<MLNFeature>> *)childrenOfCluster:(MLNPointFeatureCluster *)cluster {
-  auto featureExtension = [self featureExtensionValueOfCluster:cluster
-                                                     extension:"children"
-                                                       options:{}];
+  id featureExtension = [self featureExtensionValueOfCluster:cluster
+                                                   extension:@"children"
+                                                     options:@{}];
 
   if (!featureExtension) {
     return @[];
   }
 
-  if (!featureExtension->is<mln::FeatureCollection>()) {
-    return @[];
-  }
-
-  std::vector<mln::GeoJSONFeature> leaves = featureExtension->get<mln::FeatureCollection>();
-  return MLNFeaturesFromMBGLFeatures(leaves);
+  return MLNFeaturesFromFeatureExtensionValue(featureExtension);
 }
 
 - (double)zoomLevelForExpandingCluster:(MLNPointFeatureCluster *)cluster {
-  auto featureExtension = [self featureExtensionValueOfCluster:cluster
-                                                     extension:"expansion-zoom"
-                                                       options:{}];
+  id featureExtension = [self featureExtensionValueOfCluster:cluster
+                                                   extension:@"expansion-zoom"
+                                                     options:@{}];
 
-  if (!featureExtension) {
+  if (![featureExtension isKindOfClass:[NSNumber class]]) {
     return -1.0;
   }
 
-  if (!featureExtension->is<mln::Value>()) {
-    return -1.0;
-  }
-
-  auto value = featureExtension->get<mln::Value>();
-  if (value.is<uint64_t>()) {
-    auto zoom = value.get<uint64_t>();
-    return static_cast<double>(zoom);
-  }
-
-  return -1.0;
+  return [featureExtension doubleValue];
 }
 
 - (void)debugRecursiveLogForFeature:(id<MLNFeature>)feature indent:(NSUInteger)indent {
@@ -430,7 +562,9 @@ mln::Immutable<mln::style::GeoJSONOptions> MLNGeoJSONOptionsFromDictionary(
 
   printf("%*s%s\n", (int)indent, "", log.UTF8String);
 
-  MLNPointFeatureCluster *cluster = MLN_OBJC_DYNAMIC_CAST(feature, MLNPointFeatureCluster);
+  MLNPointFeatureCluster *cluster =
+      [(id)feature isKindOfClass:[MLNPointFeatureCluster class]] ? (MLNPointFeatureCluster *)feature
+                                                                 : nil;
 
   if (cluster) {
     for (id<MLNFeature> child in [self childrenOfCluster:cluster]) {

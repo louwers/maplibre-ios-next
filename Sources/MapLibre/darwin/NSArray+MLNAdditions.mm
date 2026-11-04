@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSArray+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSArray+MLNAdditions.h"
 
 #import "MLNLoggingConfiguration_Private.h"
@@ -6,19 +8,16 @@
 
 @implementation NSArray (MLNAdditions)
 
-- (std::vector<mln::Value>)mgl_vector {
-  std::vector<mln::Value> vector;
-  vector.reserve(self.count);
+- (NSArray *)mgl_vector {
+  NSMutableArray *vector = [NSMutableArray arrayWithCapacity:self.count];
   for (id value in self) {
     if ([value isKindOfClass:[NSArray class]]) {
-      std::vector<mln::Value> innerVector = [value mgl_vector];
-      vector.push_back(innerVector);
+      [vector addObject:[value mgl_vector]];
     } else if ([value isKindOfClass:[NSDictionary class]]) {
-      mln::PropertyMap propertyMap = [value mgl_propertyMap];
-      vector.push_back(propertyMap);
+      [vector addObject:[value mgl_propertyMap]];
     } else {
       NSExpression *expression = [NSExpression expressionForConstantValue:value];
-      vector.push_back(expression.mgl_constantMBGLValue);
+      [vector addObject:expression.mgl_constantJSONValue];
     }
   }
   return vector;

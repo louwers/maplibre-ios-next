@@ -1,10 +1,10 @@
+// Based on platform/darwin/src/MLNShapeCollection.mm at ios-v7.0.0
+
 #import "MLNShapeCollection.h"
 
 #import "MLNFeature.h"
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNShape_Private.h"
-
-#import <mln/style/conversion/geojson.hpp>
 
 @implementation MLNShapeCollection
 
@@ -73,13 +73,12 @@
   return [geometries copy];
 }
 
-- (mln::Geometry<double>)geometryObject {
-  mapbox::geojson::geometry_collection collection;
-  collection.reserve(self.shapes.count);
+- (id)geometryObject {
+  NSMutableArray *geometries = [[NSMutableArray alloc] initWithCapacity:self.shapes.count];
   for (MLNShape *shape in self.shapes) {
-    collection.push_back([shape geometryObject]);
+    [geometries addObject:[shape geometryObject]];
   }
-  return collection;
+  return @{@"type" : @"GeometryCollection", @"geometries" : geometries};
 }
 
 @end

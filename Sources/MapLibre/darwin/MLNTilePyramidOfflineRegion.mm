@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNTilePyramidOfflineRegion.mm at ios-v7.0.0
+
 #import "MLNTilePyramidOfflineRegion.h"
 
 #if !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
@@ -9,6 +11,7 @@
 #import "MLNOfflineRegion_Private.h"
 #import "MLNStyle.h"
 #import "MLNTilePyramidOfflineRegion_Private.h"
+#import "MLNFFI.h"
 
 @interface MLNTilePyramidOfflineRegion () <MLNOfflineRegion_Private,
                                            MLNTilePyramidOfflineRegion_Private>
@@ -17,6 +20,8 @@
 
 @implementation MLNTilePyramidOfflineRegion {
   NSURL *_styleURL;
+  // The UTF-8 style URL that mgl_offlineRegionDefinition points into.
+  NSData *_definitionStyleURL;
 }
 
 @synthesize styleURL = _styleURL;
@@ -68,18 +73,18 @@
 }
 
 - (instancetype)initWithOfflineRegionDefinition:
-    (const mln::OfflineTilePyramidRegionDefinition &)definition {
-  NSURL *styleURL = [NSURL URLWithString:@(definition.styleURL.c_str())];
-  MLNCoordinateBounds bounds = MLNCoordinateBoundsFromLatLngBounds(definition.bounds);
+    (const mln_offline_tile_pyramid_region_definition *)definition {
+  NSURL *styleURL = [NSURL URLWithString:MLNFFIStringFromBufferView(definition->style_url) ?: @""];
+  MLNCoordinateBounds bounds = MLNCoordinateBoundsFromLatLngBounds(definition->bounds);
   MLNTilePyramidOfflineRegion *result = [self initWithStyleURL:styleURL
                                                         bounds:bounds
-                                                 fromZoomLevel:definition.minZoom
-                                                   toZoomLevel:definition.maxZoom];
-  result.includesIdeographicGlyphs = definition.includeIdeographs;
+                                                 fromZoomLevel:definition->min_zoom
+                                                   toZoomLevel:definition->max_zoom];
+  result.includesIdeographicGlyphs = definition->include_ideographs;
   return result;
 }
 
-- (const mln::OfflineRegionDefinition)offlineRegionDefinition {
+- (mln_offline_region_definition)mgl_offlineRegionDefinition {
 #if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
   const float scaleFactor = [UIScreen instancesRespondToSelector:@selector(nativeScale)]
                                 ? [[UIScreen mainScreen] nativeScale]
@@ -87,9 +92,17 @@
 #elif TARGET_OS_MAC
   const float scaleFactor = [NSScreen mainScreen].backingScaleFactor;
 #endif
-  return mln::OfflineTilePyramidRegionDefinition(
-      _styleURL.absoluteString.UTF8String, MLNLatLngBoundsFromCoordinateBounds(_bounds),
-      _minimumZoomLevel, _maximumZoomLevel, scaleFactor, _includesIdeographicGlyphs);
+  _definitionStyleURL = [_styleURL.absoluteString dataUsingEncoding:NSUTF8StringEncoding];
+  mln_offline_region_definition definition = {sizeof(mln_offline_region_definition)};
+  definition.type = MLN_OFFLINE_REGION_DEFINITION_TILE_PYRAMID;
+  mln_offline_tile_pyramid_region_definition &tilePyramid = definition.data.tile_pyramid;
+  tilePyramid.style_url = {_definitionStyleURL.bytes, _definitionStyleURL.length};
+  tilePyramid.bounds = MLNLatLngBoundsFromCoordinateBounds(_bounds);
+  tilePyramid.min_zoom = _minimumZoomLevel;
+  tilePyramid.max_zoom = _maximumZoomLevel;
+  tilePyramid.pixel_ratio = scaleFactor;
+  tilePyramid.include_ideographs = _includesIdeographicGlyphs;
+  return definition;
 }
 
 - (nullable instancetype)initWithCoder:(NSCoder *)coder {

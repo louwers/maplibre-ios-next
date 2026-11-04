@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/NSBundle+MLNAdditions.mm at ios-v7.0.0
+
 #import "NSBundle+MLNAdditions.h"
 
 #import "MLNSettings.h"
@@ -7,6 +9,11 @@ const MLNExceptionName MLNBundleNotFoundException = @"MLNBundleNotFoundException
 @implementation NSBundle (MLNAdditions)
 
 + (instancetype)mgl_frameworkBundle {
+#ifdef SWIFTPM_MODULE_BUNDLE
+  // Built as a Swift package: SwiftPM copies the resources into a bundle of
+  // their own and defines this accessor for it.
+  return SWIFTPM_MODULE_BUNDLE;
+#endif
   NSBundle *bundle = [self bundleForClass:[MLNSettings class]];
 
 #ifndef MLN_CUSTOM_COMBINED_BUNDLE

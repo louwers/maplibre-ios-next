@@ -10,7 +10,7 @@
 }
 
 - (NSString *)description {
-  if (self.rawLayer) {
+  if (self.mgl_map) {
     return [NSString
         stringWithFormat:@"<%@: %p; identifier = %@; sourceIdentifier = %@; visible = %@>",
                          NSStringFromClass([self class]), (void *)self, self.identifier,

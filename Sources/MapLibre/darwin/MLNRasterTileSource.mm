@@ -1,24 +1,16 @@
+// Based on platform/darwin/src/MLNRasterTileSource.mm at ios-v7.0.0
+
 #import "MLNRasterTileSource_Private.h"
 
 #import "MLNLoggingConfiguration_Private.h"
-#import "MLNMapView_Private.h"
 #import "MLNSource_Private.h"
 #import "MLNTileSource_Private.h"
 #import "NSURL+MLNAdditions.h"
-
-#include <mln/map/map.hpp>
-#include <mln/style/sources/raster_source.hpp>
 
 const MLNTileSourceOption MLNTileSourceOptionTileSize = @"MLNTileSourceOptionTileSize";
 
 static const CGFloat MLNRasterTileSourceClassicTileSize = 256;
 static const CGFloat MLNRasterTileSourceRetinaTileSize = 512;
-
-@interface MLNRasterTileSource ()
-
-@property (nonatomic, readonly) mln::style::RasterSource *rawSource;
-
-@end
 
 @implementation MLNRasterTileSource
 
@@ -40,25 +32,23 @@ static const CGFloat MLNRasterTileSourceRetinaTileSize = 512;
                   configurationURL:(NSURL *)configurationURL
                           tileSize:(CGFloat)tileSize {
   NSString *configurationURLString = configurationURL.mgl_URLByStandardizingScheme.absoluteString;
-  auto source = [self pendingSourceWithIdentifier:identifier
-                                     urlOrTileset:configurationURLString.UTF8String
-                                         tileSize:uint16_t(round(tileSize))];
-  return self = [super initWithPendingSource:std::move(source)];
+  NSDictionary *source = @{
+    @"type" : [[self class] mgl_sourceType],
+    @"url" : configurationURLString ?: @"",
+    @"tileSize" : @(uint16_t(round(tileSize))),
+  };
+  return self = [super initWithPendingIdentifier:identifier sourceJSON:source];
 }
 
-- (std::unique_ptr<mln::style::RasterSource>)
-    pendingSourceWithIdentifier:(NSString *)identifier
-                   urlOrTileset:(mln::variant<std::string, mln::Tileset>)urlOrTileset
-                       tileSize:(uint16_t)tileSize {
-  auto source =
-      std::make_unique<mln::style::RasterSource>(identifier.UTF8String, urlOrTileset, tileSize);
-  return source;
++ (NSString *)mgl_sourceType {
+  return @"raster";
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                   tileURLTemplates:(NSArray<NSString *> *)tileURLTemplates
                            options:(nullable NSDictionary<MLNTileSourceOption, id> *)options {
-  mln::Tileset tileSet = MLNTileSetFromTileURLTemplates(tileURLTemplates, options);
+  NSMutableDictionary *source =
+      MLNTileSourceJSONFromTileURLTemplates(tileURLTemplates, options, [[self class] mgl_sourceType]);
 
   uint16_t tileSize = MLNRasterTileSourceRetinaTileSize;
   if (NSNumber *tileSizeNumber = options[MLNTileSourceOptionTileSize]) {
@@ -69,31 +59,24 @@ static const CGFloat MLNRasterTileSourceRetinaTileSize = 512;
     tileSize = static_cast<uint16_t>(round(tileSizeNumber.doubleValue));
   }
 
-  auto source = [self pendingSourceWithIdentifier:identifier
-                                     urlOrTileset:tileSet
-                                         tileSize:tileSize];
-  return self = [super initWithPendingSource:std::move(source)];
-}
-
-- (mln::style::RasterSource *)rawSource {
-  return (mln::style::RasterSource *)super.rawSource;
+  source[@"type"] = [[self class] mgl_sourceType];
+  source[@"tileSize"] = @(tileSize);
+  return self = [super initWithPendingIdentifier:identifier sourceJSON:source];
 }
 
 - (NSURL *)configurationURL {
   MLNAssertStyleSourceIsValid();
-  auto url = self.rawSource->getURL();
-  return url ? [NSURL URLWithString:@(url->c_str())] : nil;
+  return self.mgl_configurationURL;
 }
 
 - (NSString *)attributionHTMLString {
-  if (!self.rawSource) {
+  if (!self.mgl_isValid) {
     MLNAssert(0, @"Source with identifier `%@` was invalidated after a style change",
               self.identifier);
     return nil;
   }
 
-  auto attribution = self.rawSource->getAttribution();
-  return attribution ? @(attribution->c_str()) : nil;
+  return self.mgl_attributionHTMLString;
 }
 
 @end

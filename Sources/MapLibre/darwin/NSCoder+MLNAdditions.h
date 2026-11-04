@@ -1,7 +1,9 @@
+// Based on platform/darwin/src/NSCoder+MLNAdditions.h at ios-v7.0.0
+
 #import <CoreLocation/CoreLocation.h>
 #import <Foundation/Foundation.h>
 
-#import <mln/util/feature.hpp>
+#include <vector>
 
 @interface NSCoder (MLNAdditions)
 

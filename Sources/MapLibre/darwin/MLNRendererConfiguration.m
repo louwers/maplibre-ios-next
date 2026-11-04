@@ -1,3 +1,5 @@
+// Based on platform/darwin/src/MLNRendererConfiguration.m at ios-v7.0.0
+
 #import "MLNRendererConfiguration.h"
 
 #if TARGET_OS_IPHONE
@@ -8,6 +10,10 @@
 
 static NSString * const MLNCollisionBehaviorPre4_0Key = @"MLNCollisionBehaviorPre4_0";
 static NSString * const MLNIdeographicFontFamilyNameKey = @"MLNIdeographicFontFamilyName";
+
+// The C API creates its renderers without a local font family and without
+// per-source collision options (C_API_GAPS.md), so nothing passes these values
+// on; they are read as classic read them.
 
 @implementation MLNRendererConfiguration
 
