@@ -1162,8 +1162,6 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
   }
   _session = session;
 
-  [_map loadStyleURL:options.styleURL.absoluteString message:nil];
-
   // Camera options
   mln_camera_update update = {sizeof(mln_camera_update)};
   update.mode = MLN_CAMERA_UPDATE_MODE_JUMP;
@@ -1228,6 +1226,11 @@ NSArray<MLNAttributionInfo *> *MLNAttributionInfosFromAttributions(
              }];
     }
   }
+
+  // Classic's snapshotter loaded the style asynchronously, so the camera above
+  // was set first and the style's default camera did not apply. The C API can
+  // load a local style within the call, so the style comes last.
+  [_map loadStyleURL:options.styleURL.absoluteString message:nil];
 }
 
 - (MLNStyle *)style {

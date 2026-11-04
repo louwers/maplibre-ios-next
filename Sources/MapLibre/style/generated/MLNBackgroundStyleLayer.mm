@@ -36,7 +36,7 @@ static const MLNStylePropertyDescriptor MLNBackgroundBackgroundPatternProperty =
     MLNStyleValueTypeResolvedImage,
     NO,
     NO,
-    NULL,
+    "\"\"",
     NULL,
     0,
 };

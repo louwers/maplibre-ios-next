@@ -897,12 +897,39 @@ global.descriptorValueType = function (property) {
     throw new Error(`unknown type for ${property.name}`);
 };
 
-// The spec default as a C string literal of JSON, or NULL.
+// Defaults of the core (src/mln/style/layers/*_layer_properties.hpp at
+// ios-v7.0.0) that differ from the style specification's.
+const coreDefaultOverrides = {
+    'line-round-limit': 1,
+};
+
+// The default the core reports for a property that is not set, as a C string
+// literal of JSON, or NULL. Where the spec has none, the core uses its value
+// type's default (0, "", an empty array, a transparent color).
 global.descriptorDefault = function (property) {
-    if (property.default === undefined) {
-        return 'NULL';
+    const name = originalPropertyName(property);
+    let value = property.default;
+    if (name in coreDefaultOverrides) {
+        value = coreDefaultOverrides[name];
     }
-    return JSON.stringify(JSON.stringify(property.default));
+    if (value === undefined) {
+        if (property['property-type'] === 'color-ramp') {
+            return 'NULL';
+        }
+        switch (property.type) {
+            case 'number': value = 0; break;
+            case 'string':
+            case 'formatted':
+            case 'resolvedImage': value = ''; break;
+            case 'color': value = 'rgba(0, 0, 0, 0)'; break;
+            case 'array':
+            case 'numberArray':
+            case 'colorArray':
+            case 'variableAnchorOffsetCollection': value = []; break;
+            default: return 'NULL';
+        }
+    }
+    return JSON.stringify(JSON.stringify(value));
 };
 
 // [Objective-C enum constant, style-spec value] pairs for enum-valued properties.

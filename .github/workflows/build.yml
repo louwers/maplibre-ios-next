@@ -1,0 +1,38 @@
+name: Build
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        destination: ["generic/platform=iOS", "generic/platform=iOS Simulator"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          xcodebuild -scheme MapLibreNext -destination "${{ matrix.destination }}" \
+            -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build
+
+  generated:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generated style code is up to date
+        run: |
+          cd scripts/style-code
+          npm ci
+          node generate.mjs
+          git diff --exit-code

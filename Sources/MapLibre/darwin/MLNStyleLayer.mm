@@ -56,6 +56,77 @@ static NSDictionary *MLNPlaceholderSourceForLayerType(NSString *type) {
   return @{@"type" : @"geojson", @"data" : @{@"type" : @"FeatureCollection", @"features" : @[]}};
 }
 
+/// The core serializes constant formatted text and image values in a form
+/// that it does not parse back ({"sections": …}, {"name": …}). Rewrites them
+/// as values it parses to the same constants, so a layer's JSON can be added
+/// to another map.
+static id MLNReparsableStyleValue(id value) {
+  if (![value isKindOfClass:[NSDictionary class]]) {
+    return value;
+  }
+  NSDictionary *dictionary = value;
+  if ([dictionary[@"sections"] isKindOfClass:[NSArray class]]) {
+    NSMutableArray *format = [NSMutableArray arrayWithObject:@"format"];
+    for (NSDictionary *section in dictionary[@"sections"]) {
+      id image = section[@"image"];
+      if (image && image != [NSNull null]) {
+        id name = [image isKindOfClass:[NSDictionary class]] ? image[@"name"] : image;
+        [format addObject:@[ @"image", name ?: @"" ]];
+        [format addObject:@{}];
+        continue;
+      }
+      [format addObject:section[@"text"] ?: @""];
+      NSMutableDictionary *options = [NSMutableDictionary dictionary];
+      if ([section[@"scale"] isKindOfClass:[NSNumber class]]) {
+        options[@"font-scale"] = section[@"scale"];
+      }
+      if ([section[@"fontStack"] isKindOfClass:[NSString class]]) {
+        options[@"text-font"] =
+            @[ @"literal", [section[@"fontStack"] componentsSeparatedByString:@","] ];
+      }
+      id textColor = section[@"textColor"];
+      if (textColor && textColor != [NSNull null]) {
+        options[@"text-color"] = textColor;
+      }
+      [format addObject:options];
+    }
+    return format;
+  }
+  if ([dictionary[@"name"] isKindOfClass:[NSString class]] && dictionary[@"available"]) {
+    NSString *name = dictionary[@"name"];
+    // A plain string would be read as a token string if it has braces.
+    return [name containsString:@"{"] ? @[ @"image", name ] : name;
+  }
+  return value;
+}
+
+NSDictionary *MLNReparsableLayerJSON(NSDictionary *layer) {
+  NSMutableDictionary *json = [layer mutableCopy];
+  for (NSString *section in @[ @"layout", @"paint" ]) {
+    NSDictionary *properties = layer[section];
+    if (![properties isKindOfClass:[NSDictionary class]]) {
+      continue;
+    }
+    NSMutableDictionary *rewritten = [NSMutableDictionary dictionaryWithCapacity:properties.count];
+    [properties enumerateKeysAndObjectsUsingBlock:^(NSString *name, id value, BOOL *stop) {
+      rewritten[name] = MLNReparsableStyleValue(value);
+    }];
+    json[section] = rewritten;
+  }
+  return json;
+}
+
+/// The core's message in a C API diagnostic, which prefixes it with the kind
+/// of value that failed to convert.
+static NSString *MLNCoreErrorMessage(NSString *diagnostic) {
+  for (NSString *prefix in @[ @"layer property: ", @"light property: ", @"style layer: " ]) {
+    if ([diagnostic hasPrefix:prefix]) {
+      return [diagnostic substringFromIndex:prefix.length];
+    }
+  }
+  return diagnostic;
+}
+
 static NSString *MLNNextPendingIdentifier(void) {
   static std::atomic<uint64_t> counter{0};
   return [NSString stringWithFormat:@"org.maplibre.next.pending.%llu", ++counter];
@@ -104,7 +175,7 @@ static NSString *MLNNextPendingIdentifier(void) {
 - (void)mgl_becomePendingWithJSON:(NSDictionary *)json sourceIdentifier:(NSString *)sourceIdentifier {
   MLNFFIMap *scratch = [MLNFFIMap scratchMap];
   NSString *pendingIdentifier = MLNNextPendingIdentifier();
-  NSMutableDictionary *layer = [json mutableCopy];
+  NSMutableDictionary *layer = [MLNReparsableLayerJSON(json) mutableCopy];
   layer[@"id"] = pendingIdentifier;
   _layerType = json[@"type"] ?: _layerType;
   if (sourceIdentifier.length) {
@@ -174,20 +245,32 @@ static NSString *MLNNextPendingIdentifier(void) {
                        self, style];
   }
 
-  NSMutableDictionary *json = [[[MLNFFIMap scratchMap] styleLayerJSON:_pendingLayerIdentifier] mutableCopy];
+  NSMutableDictionary *json =
+      [MLNReparsableLayerJSON([[MLNFFIMap scratchMap] styleLayerJSON:_pendingLayerIdentifier] ?: @{})
+          mutableCopy];
   json[@"id"] = self.identifier;
   if (_pendingSourceIdentifier.length) {
     json[@"source"] = _pendingSourceIdentifier;
   }
-  NSString *before = otherLayer.identifier ?: [style mgl_topInsertionLayerIdentifier];
+  NSString *before = otherLayer.identifier;
+  // Classic's core put a layer on top when the layer to insert it below was
+  // not in the style; the C API refuses that.
+  if (before && ![style.mgl_map styleLayerWithIdentifier:before]) {
+    before = nil;
+  }
   NSString *message;
   mln_status status = [style.mgl_map addStyleLayerJSON:json belowLayer:before message:&message];
   if (status == MLN_STATUS_NOT_FOUND && _pendingSourceIdentifier.length &&
       ![style.mgl_map styleSourceWithIdentifier:_pendingSourceIdentifier]) {
-    // Classic's core accepted a layer before its source. The C API refuses it,
-    // so the style adds the layer once the source arrives (C_API_GAPS.md).
-    [style mgl_deferLayer:self json:json belowLayer:otherLayer.identifier];
-    return;
+    // Classic's core accepted a layer before its source. The C API refuses
+    // it, so the style stands in a hidden placeholder source until the real
+    // one is added (C_API_GAPS.md).
+    NSString *placeholder = [style mgl_placeholderSourceForSource:_pendingSourceIdentifier
+                                                        layerType:_layerType];
+    if (placeholder) {
+      json[@"source"] = placeholder;
+      status = [style.mgl_map addStyleLayerJSON:json belowLayer:before message:&message];
+    }
   }
   if (status != MLN_STATUS_OK) {
     [NSException raise:MLNRedundantLayerIdentifierException format:@"%@", message];
@@ -217,7 +300,8 @@ static NSString *MLNNextPendingIdentifier(void) {
   }
   [style mgl_unregisterLayer:self];
   _style = nil;
-  [self mgl_becomePendingWithJSON:json sourceIdentifier:info.sourceIdentifier];
+  [self mgl_becomePendingWithJSON:json
+                 sourceIdentifier:[style mgl_sourceIdentifierForMapSource:info.sourceIdentifier]];
 }
 
 // MARK: - Properties
@@ -229,7 +313,7 @@ static NSString *MLNNextPendingIdentifier(void) {
                                                     value:json
                                                   message:&message];
   if (status != MLN_STATUS_OK) {
-    [NSException raise:NSInvalidArgumentException format:errorFormat, message];
+    [NSException raise:NSInvalidArgumentException format:errorFormat, MLNCoreErrorMessage(message)];
   }
 }
 
@@ -272,7 +356,7 @@ static NSString *MLNNextPendingIdentifier(void) {
   if (_pendingLayerIdentifier) {
     return _pendingSourceIdentifier ?: @"";
   }
-  return self.mgl_layerInfo.sourceIdentifier ?: @"";
+  return [self.mgl_style mgl_sourceIdentifierForMapSource:self.mgl_layerInfo.sourceIdentifier ?: @""];
 }
 
 - (NSString *)mgl_sourceLayerIdentifier {

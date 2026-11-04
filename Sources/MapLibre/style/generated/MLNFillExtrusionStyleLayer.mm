@@ -76,7 +76,7 @@ static const MLNStylePropertyDescriptor MLNFillExtrusionFillExtrusionPatternProp
     MLNStyleValueTypeResolvedImage,
     NO,
     YES,
-    NULL,
+    "\"\"",
     NULL,
     0,
 };

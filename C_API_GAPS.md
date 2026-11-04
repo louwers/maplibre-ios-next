@@ -29,7 +29,7 @@ differs is behavior, for these reasons.
 
 | Feature | Public API affected | maplibre-ios-next |
 |---|---|---|
-| Annotation manager | `addAnnotation(s):`, `MLNPointAnnotation`, `MLNPolyline`, `MLNPolygon`, `MLNAnnotationImage`, snapshot annotations | Emulated with hidden GeoJSON sources and layers |
+| Annotation manager | `addAnnotation(s):`, `MLNPointAnnotation`, `MLNPolyline`, `MLNPolygon`, `MLNAnnotationImage`, snapshot annotations | Emulated with a GeoJSON source and the core's annotation layers |
 | Custom layers | `MLNCustomStyleLayer` drawing | Invisible placeholder layer; draw callbacks never run |
 | MapLibre iOS plugin layers | `MLNPluginLayer`, `addPluginLayerType:` | Logged; not available |
 | Tile server options, API key | `MLNSettings`, `mapbox://`, `maptiler://` | Kept as values; only `maplibre://` resolves |
@@ -41,9 +41,10 @@ differs is behavior, for these reasons.
 | Shader and image-removal callbacks | `shaderWillCompile:…`, `shouldRemoveStyleImage:` | Never called |
 | Synchronous missing-image answer | `mapView:didFailToLoadImage:` | Image added when the event arrives |
 | Style name, default camera | `MLNStyle.name`, `resetPosition` | Read from the loaded style document |
-| Layers before their source | `addLayer:` | Deferred until the source is added |
+| Layers before their source | `addLayer:` | Added on a hidden placeholder source |
 | `presentsWithTransaction`, pixel format | `MLNMapView` | Not configurable |
 | Pixel ratio changes | `MLNMapView` | Fixed at creation |
+| x86_64 simulator | Apps built for Intel simulators | The FFI XCFramework's simulator slice is arm64 only |
 
 **Fixed on FFI `main`, not yet released**: a frame pacer and redraw wake
 (`apple.h`), releasing the render target in the background, camera fit
@@ -70,12 +71,24 @@ classic did, what the C API offers, and what this package does.
 - **Events arrive on a worker thread** (all `MLNMapViewDelegate` callbacks).
   Classic's `MapObserver` ran inside the call that caused the change, on the
   main thread. The C API delivers runtime events on the worker before the
-  command's completion. The bridge queues them and, after each blocking call
-  on the main thread, delivers them before the call returns, so camera and
-  style callbacks still happen during `setCenterCoordinate:…`,
-  `-[MLNStyle addLayer:]` and so on. Events not caused by a call (animation
-  frames, tile loads, rendering) are delivered asynchronously on the main
-  queue, a run-loop turn later than classic.
+  command's completion. The bridge queues them. After each blocking call on
+  the main thread it delivers the events of the kinds classic raised within a
+  call (camera changes, the start of a style load, and a style loaded from
+  JSON), so `regionWillChange`/`regionDidChange` still happen during
+  `setCenterCoordinate:…`. Everything else (style and tile loads, rendering,
+  idleness) is delivered on a later turn of the main queue, in order, as
+  classic delivered it. The C API's order of events can still differ from
+  classic's where the C API runs work synchronously that the core did
+  asynchronously, below.
+- **Local styles load within the call** (`MLNMapView.styleURL` with a
+  `file:` URL, `MLNMapSnapshotter`). Classic's core read every style through
+  its file source, asynchronously, so camera changes made right after setting
+  a style URL happened before the style loaded, and the style's default
+  camera (`center`, `zoom`, `bearing`, `pitch`) was then not applied. The C API
+  can load a local style during `mln_map_set_style_url`, before those camera
+  changes, so the default camera applies first and only the fields the app
+  sets override it. The snapshotter sets its camera before loading the style
+  to keep classic's result; `MLNMapView` cannot reorder the app's calls.
 
 ### Rendering
 
@@ -176,9 +189,24 @@ classic did, what the C API offers, and what this package does.
 - **Layers whose source is missing are refused**
   (`-[MLNStyle addLayer:]` and friends with a layer whose source is not in the
   style). Classic's core added such layers (`TODO: verify source`). The C API
-  returns `MLN_STATUS_NOT_FOUND` ("layer source does not exist"), so
-  maplibre-ios-next keeps the layer back and adds it once a source with that
-  identifier is added; until then it is not in `style.layers`.
+  returns `MLN_STATUS_NOT_FOUND` ("layer source does not exist"), so the layer
+  is added on a hidden, empty placeholder source of the kind it needs
+  (`org.maplibre.next.placeholder.<vector|raster|raster-dem>.<source>`) and
+  still reports its own source. Adding the source later moves the layers onto
+  it in place. A layer that does not fit the source added later is logged and
+  dropped; classic kept it, unrendered.
+- **Layers inserted below a layer that is not in the style**
+  (`-[MLNStyle insertLayer:belowLayer:]` with a sibling that was never added).
+  Classic's core put the layer on top; the C API refuses
+  (`before_layer_id does not exist`), so the sibling is dropped and the layer
+  goes on top.
+- **Layer JSON does not round-trip** (moving a layer between the scratch map
+  and a style, `-[MLNStyle removeLayer:]` followed by `-addLayer:`). The C API
+  serializes constant formatted text as `{"sections": …}` and constant images
+  as `{"name": …, "available": …}`, which it then refuses as property values
+  ("function value must specify stops"). Such values are rewritten as
+  `["format", …]` expressions and plain image names before the JSON is added
+  again.
 - **Unset properties report nothing** (every style layer and light property
   getter). Classic fell back to the core's `getDefault…()`. The C API returns
   no value for an unset property, so the getter sets the style-spec default on
@@ -204,20 +232,25 @@ classic did, what the C API offers, and what this package does.
 - **No annotation manager** (`-addAnnotation:`, `-addAnnotations:`,
   `MLNPointAnnotation`, `MLNPolyline`, `MLNPolygon`, `MLNAnnotationImage`,
   annotation selection). The FFI is built with
-  `MLN_WITH_LEGACY_ANNOTATIONS=OFF`. maplibre-ios-next draws annotations with
-  three hidden GeoJSON sources and layers (symbols, lines, fills) above the
-  style's layers, styled from feature properties, and hit-tests them with
-  rendered-feature queries:
-  - Classic kept one layer per shape annotation, ordered by insertion; here
-    all fills draw below all lines, and features of one kind in insertion
-    order.
-  - Layers added at the top of the style go below the annotation layers,
-    which stay on top as the core's did.
-  - Annotation sources and layers are hidden from `MLNStyle.sources` and
-    `.layers`; the core's own were hidden by its source type.
-  - The annotations are added again after every style load, as the core did.
-  - Rendered-feature queries without a layer filter can return annotation
-    features with the SDK's own properties.
+  `MLN_WITH_LEGACY_ANNOTATIONS=OFF`. maplibre-ios-next reproduces what the
+  core's `AnnotationManager` put in the style, which apps can see in
+  `MLNStyle.sources` and `.layers`:
+  - the source `org.maplibre.annotations` in every style (an `MLNSource`), here
+    a GeoJSON source with one feature per annotation, its tag as the feature
+    ID;
+  - the symbol layer `org.maplibre.annotations.points` with classic's icon
+    expression, `icon-allow-overlap` and `icon-ignore-placement`;
+  - one line or fill layer `org.maplibre.annotations.shape.<tag>` per shape
+    annotation, below the point layer, with the annotation's opacity, colors
+    and width as constants;
+  - annotation images as style images named `org.maplibre.annotations.<name>`.
+
+  Classic's source had one tile layer per annotation layer; a GeoJSON source
+  has none, so the layers select their features with a filter (their
+  `predicate` is not nil, unlike classic's), while `sourceLayerIdentifier`
+  keeps classic's names. Annotations are hit-tested with rendered-feature
+  queries on those layers and come back after every style load, as classic's
+  did.
 - `MLNAnnotationView`s, callouts and the user location view are UIKit and
   work as before.
 
@@ -281,6 +314,11 @@ classic did, what the C API offers, and what this package does.
   `MLNTileSourceOptionDEMEncoding` and `MLNVectorTileSourceOptionEncoding` to
   any tile set, where the core ignored the irrelevant one. The style JSON has
   one `encoding` key, so only the option that matches the source type is sent.
+- **Removed feature state disappears immediately**
+  (`-removeFeatureState…`, `-resetFeatureStates…` followed by
+  `-featureState…`). Classic's renderer applied removals when it next drew,
+  so reading the state before then still returned the removed keys. The C
+  API applies them at once.
 - **Feature state is kept by the map, with string IDs**
   (`-setFeatureState…`, `-featureState…`, `-removeFeatureState…`,
   `-resetFeatureStates…`). Classic called the map view's `mbgl::Renderer`. The
@@ -288,14 +326,16 @@ classic did, what the C API offers, and what this package does.
   are strings in this release, as classic's public API already passed them.
   Only sources on a map view support it, as before. State values must be JSON
   values; classic also accepted colors (converted to strings).
-- **Adding a layer before its source.** Classic's core accepted a layer whose
-  source was not in the style ("TODO: verify source"); the C API refuses it
-  (`MLN_STATUS_NOT_FOUND`). The style defers such layers and adds them when the
-  source is added (`-[MLNStyle mgl_deferLayer:…]`), so they are missing from
-  `MLNStyle.layers` until then.
+- **Adding a layer before its source**: see "Layers whose source is missing are
+  refused" above.
 - **Removing a source that a layer uses** fails in both; the C API reports
   `MLN_STATUS_INVALID_STATE` ("source is used by a layer"), mapped to
   `MLNErrorCodeSourceIsInUseCannotRemove` as before.
+- **Degenerate image source quads are refused** (`MLNImageSource` with all
+  four coordinates equal, such as `coordinateQuad:{}`). Classic accepted them
+  (the image draws nothing); the C API refuses them ("image source coordinates
+  must not all match"). They are sent with their corners a billionth of a
+  degree apart and reported as given.
 - **Image sources need an image or URL** (`MLNImageSource`). Classic created
   an image source with coordinates only and set the image later, and an empty
   `mln::PremultipliedImage` for `image = nil`. The C API has no image source
@@ -424,6 +464,11 @@ classic did, what the C API offers, and what this package does.
   error carried the core's `Response::Error` message. The C API's event
   carries the reason and, in the event message, the text. The
   `NSLocalizedFailureReasonErrorKey` holds that message.
+- **Region geometry is reported as stored** (`MLNOfflinePack.region` of a
+  pack read from the database). The C API returns a region's geometry as the
+  database holds it, which can differ from the given geometry in the last bit
+  of a coordinate. A pack created by `-addPackForRegion:…` keeps the region it
+  was given, as classic's did.
 - **Metadata updates** (`-[MLNOfflinePack setContext:completionHandler:]`).
   Classic reloaded all packs to read the updated region back; the C API
   returns the updated region, which the pack takes directly.

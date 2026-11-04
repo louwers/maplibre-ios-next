@@ -9,6 +9,9 @@ options:
   generateEmptyDirectories: true
 settings:
   base:
+    # MapLibre Native FFI ships no x86_64 simulator slice, and Release builds
+    # every architecture by default.
+    ONLY_ACTIVE_ARCH: YES
     CLANG_ENABLE_MODULES: YES
     CLANG_ENABLE_OBJC_ARC: YES
     SWIFT_VERSION: "5.0"
@@ -69,7 +72,9 @@ schemes:
         ParityHost: all
         ParityTests: [test]
     test:
-      config: Debug
+      # Classic is a Release build (assertions off), so next is built the
+      # same way.
+      config: Release
       targets:
         - ParityTests
       gatherCoverageData: false

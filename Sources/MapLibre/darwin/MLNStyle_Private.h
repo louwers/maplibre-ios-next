@@ -57,17 +57,16 @@ FOUNDATION_EXTERN NSString *const MLNInternalStyleIdentifierPrefix;
 - (void)mgl_unregisterSource:(MLNSource *)source;
 - (nullable MLNSource *)mgl_registeredSourceWithIdentifier:(NSString *)identifier;
 
-/// The layer to insert new top layers below: the lowest of the SDK's own
-/// layers (annotations), which stay above the style's layers as the core's
-/// annotation layers did. nil if there is none.
-- (nullable NSString *)mgl_topInsertionLayerIdentifier;
+/// Adds a hidden, empty source of the kind the layer type needs and returns
+/// its identifier, so a layer can refer to a source that is not in the style
+/// yet. Classic's core accepted such layers; the C API does not. Adding the
+/// source with that identifier later moves the layers onto it.
+- (nullable NSString *)mgl_placeholderSourceForSource:(NSString *)identifier
+                                            layerType:(NSString *)layerType;
 
-/// Keeps a layer whose source is not in the style yet, and adds it when the
-/// source is added. Classic's core accepted such layers; the C API does not.
-- (void)mgl_deferLayer:(MLNStyleLayer *)layer
-                  json:(NSDictionary *)json
-            belowLayer:(nullable NSString *)before;
-- (void)mgl_addDeferredLayersForSource:(NSString *)sourceIdentifier;
+/// The source a layer refers to, given the source it uses in the map, which
+/// may be a placeholder.
+- (NSString *)mgl_sourceIdentifierForMapSource:(NSString *)identifier;
 
 @end
 

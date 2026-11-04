@@ -544,6 +544,12 @@ static void MLNOfflineStorageResourceTransform(void *userData, mln_resource_kind
                                                       : nil];
     }
     if (completion) {
+      // Classic's new pack reported the definition it was created with. The
+      // C API reports the region as stored, whose geometry may differ in the
+      // last bit of a coordinate, so the pack keeps the given region.
+      if (regionInfo && [(id)region conformsToProtocol:@protocol(NSCopying)]) {
+        regionInfo.region = [(id<NSCopying>)region copyWithZone:nil];
+      }
       MLNOfflinePack *pack =
           regionInfo ? [[MLNOfflinePack alloc] initWithRegionInfo:regionInfo] : nil;
       completion(pack, error);

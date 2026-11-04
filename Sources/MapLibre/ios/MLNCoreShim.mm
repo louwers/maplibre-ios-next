@@ -11,14 +11,10 @@ namespace mln {
 
 namespace {
 
-// Annotation sources and layers. The prefix hides them from MLNStyle.
-NSString *const PointsSource = @"org.maplibre.next.annotations.points";
-NSString *const LinesSource = @"org.maplibre.next.annotations.lines";
-NSString *const FillsSource = @"org.maplibre.next.annotations.fills";
-NSString *const PointsLayer = @"org.maplibre.next.annotations.points";
-NSString *const LinesLayer = @"org.maplibre.next.annotations.lines";
-NSString *const FillsLayer = @"org.maplibre.next.annotations.fills";
-NSString *const AnnotationTagProperty = @"org.maplibre.next.tag";
+// The core annotation manager's source and layer identifiers.
+NSString *const AnnotationSourceID = @"org.maplibre.annotations";
+NSString *const PointLayerID = @"org.maplibre.annotations.points";
+NSString *const ShapeLayerPrefix = @"org.maplibre.annotations.shape.";
 
 mln_lat_lng toC(const LatLng &latLng) { return {latLng.latitude(), latLng.longitude()}; }
 
@@ -43,6 +39,23 @@ CameraOptions cameraFromC(const mln_camera &camera) {
   options.pitch = camera.pitch;
   options.roll = camera.roll;
   options.fov = camera.field_of_view;
+  return options;
+}
+
+// The camera_for_* queries answer with camera options, whose fields say
+// which members are set.
+CameraOptions cameraFromC(const mln_camera_options &camera) {
+  CameraOptions options;
+  if (camera.fields & MLN_CAMERA_OPTION_CENTER) options.center = latLngFromC(camera.center);
+  if (camera.fields & MLN_CAMERA_OPTION_PADDING) options.padding = fromC(camera.padding);
+  if (camera.fields & MLN_CAMERA_OPTION_ANCHOR) {
+    options.anchor = ScreenCoordinate(camera.anchor.x, camera.anchor.y);
+  }
+  if (camera.fields & MLN_CAMERA_OPTION_ZOOM) options.zoom = camera.zoom;
+  if (camera.fields & MLN_CAMERA_OPTION_BEARING) options.bearing = camera.bearing;
+  if (camera.fields & MLN_CAMERA_OPTION_PITCH) options.pitch = camera.pitch;
+  if (camera.fields & MLN_CAMERA_OPTION_ROLL) options.roll = camera.roll;
+  if (camera.fields & MLN_CAMERA_OPTION_FOV) options.fov = camera.field_of_view;
   return options;
 }
 
@@ -141,12 +154,6 @@ mln_camera_fit_options fitOptions(const EdgeInsets &padding, const std::optional
     options.pitch = *pitch;
   }
   return options;
-}
-
-NSString *JSONColor(UIColor *color) {
-  CGFloat r, g, b, a;
-  [color ?: UIColor.blackColor getRed:&r green:&g blue:&b alpha:&a];
-  return [NSString stringWithFormat:@"rgba(%f,%f,%f,%f)", r * 255, g * 255, b * 255, a];
 }
 
 }  // namespace
@@ -320,13 +327,13 @@ CameraOptions Map::cameraForLatLngBounds(const LatLngBounds &bounds, const EdgeI
   mln_map h = handle();
   mln_camera_fit_options fit = fitOptions(padding, bearing, pitch);
   mln_lat_lng_bounds b = {toC(bounds.southwest()), toC(bounds.northeast())};
-  __block mln_camera camera = {};
+  __block mln_camera_options camera = {sizeof(mln_camera_options)};
   [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
     return mln_map_camera_for_lat_lng_bounds(h, b, &fit, completion, diagnostic);
   }
       consume:^(const mln_completion_result *result) {
         if (result->value) {
-          camera = *(const mln_camera *)result->value;
+          camera = *(const mln_camera_options *)result->value;
         }
       }
       message:nil];
@@ -344,13 +351,13 @@ CameraOptions Map::cameraForLatLngs(const std::vector<LatLng> &latLngs, const Ed
   }
   const mln_lat_lng *data = coordinates.data();
   size_t count = coordinates.size();
-  __block mln_camera camera = {};
+  __block mln_camera_options camera = {sizeof(mln_camera_options)};
   [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
     return mln_map_camera_for_lat_lngs(h, data, count, &fit, completion, diagnostic);
   }
       consume:^(const mln_completion_result *result) {
         if (result->value) {
-          camera = *(const mln_camera *)result->value;
+          camera = *(const mln_camera_options *)result->value;
         }
       }
       message:nil];
@@ -363,13 +370,13 @@ CameraOptions Map::cameraForGeometry(id geometry, const EdgeInsets &padding,
   mln_map h = handle();
   mln_camera_fit_options fit = fitOptions(padding, bearing, pitch);
   NSString *json = MLNFFIJSONStringFromObject(geometry);
-  __block mln_camera camera = {};
+  __block mln_camera_options camera = {sizeof(mln_camera_options)};
   [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
     return mln_map_camera_for_geometry(h, MLNFFIBufferView(json), &fit, completion, diagnostic);
   }
       consume:^(const mln_completion_result *result) {
         if (result->value) {
-          camera = *(const mln_camera *)result->value;
+          camera = *(const mln_camera_options *)result->value;
         }
       }
       message:nil];
@@ -601,6 +608,14 @@ void Map::triggerRepaint() {
 bool Map::isFullyLoaded() const { return snapshot().fully_loaded; }
 
 // MARK: Annotations
+//
+// The core's AnnotationManager (src/mln/annotation at ios-v7.0.0) kept an
+// annotation source and a point symbol layer in every style, and one line or
+// fill layer per shape annotation below the point layer, styled with the
+// annotation's constant values. The C API has no annotation source type, so
+// the source is a GeoJSON source holding every annotation as a feature whose
+// ID is its tag; the layers take their features by filter (a GeoJSON source
+// has no source layers; the classic source-layer names are kept anyway).
 
 AnnotationID Map::addAnnotation(const Annotation &annotation) {
   AnnotationID id = nextAnnotationID++;
@@ -626,14 +641,17 @@ void Map::removeAnnotation(AnnotationID id) {
   }
 }
 
+// AnnotationManager::addImage stored images under the source's prefix.
 void Map::addAnnotationImage(NSString *name, UIImage *image) {
-  annotationImages[name] = image;
-  [image mgl_addToMap:map withName:name];
+  NSString *styleName = [AnnotationSourceID stringByAppendingFormat:@".%@", name];
+  annotationImages[styleName] = image;
+  [image mgl_addToMap:map withName:styleName];
 }
 
 void Map::removeAnnotationImage(NSString *name) {
-  [annotationImages removeObjectForKey:name];
-  [map removeStyleImage:name message:nil];
+  NSString *styleName = [AnnotationSourceID stringByAppendingFormat:@".%@", name];
+  [annotationImages removeObjectForKey:styleName];
+  [map removeStyleImage:styleName message:nil];
 }
 
 void Map::restoreAnnotationsAfterStyleLoad() {
@@ -644,137 +662,151 @@ void Map::restoreAnnotationsAfterStyleLoad() {
   flushAnnotations();
 }
 
-// Writes the annotations into the style. The core's annotation manager kept
-// one symbol layer for point annotations and one layer per shape annotation,
-// all above the style's layers. This keeps one layer per kind, styled from
-// feature properties.
+NSString *ShapeLayerID(AnnotationID id) {
+  return [ShapeLayerPrefix stringByAppendingFormat:@"%llu", (unsigned long long)id];
+}
+
+// Writes the annotations into the style, as AnnotationManager::updateStyle()
+// and updateData() did.
 void Map::flushAnnotations() {
   if (!annotationsDirty) {
     return;
   }
-  NSMutableArray *points = [NSMutableArray array];
-  NSMutableArray *lines = [NSMutableArray array];
-  NSMutableArray *fills = [NSMutableArray array];
-  for (const auto &[id, annotation] : annotations) {
-    if (const auto *symbol = std::get_if<SymbolAnnotation>(&annotation)) {
-      [points addObject:@{
-        @"type" : @"Feature",
-        @"id" : @(id),
-        @"geometry" : @{@"type" : @"Point", @"coordinates" : @[ @(symbol->geometry.x), @(symbol->geometry.y) ]},
-        @"properties" : @{AnnotationTagProperty : @(id), @"icon" : @(symbol->icon.c_str())},
-      }];
-    } else if (const auto *line = std::get_if<LineAnnotation>(&annotation)) {
-      [lines addObject:@{
-        @"type" : @"Feature",
-        @"id" : @(id),
-        @"geometry" : line->geometry ?: @{},
-        @"properties" : @{
-          AnnotationTagProperty : @(id),
-          @"opacity" : @(line->opacity),
-          @"width" : @(line->width),
-          @"color" : JSONColor(line->color),
-        },
-      }];
-    } else if (const auto *fill = std::get_if<FillAnnotation>(&annotation)) {
-      [fills addObject:@{
-        @"type" : @"Feature",
-        @"id" : @(id),
-        @"geometry" : fill->geometry ?: @{},
-        @"properties" : @{
-          AnnotationTagProperty : @(id),
-          @"opacity" : @(fill->opacity),
-          @"color" : JSONColor(fill->color),
-          @"outline" : JSONColor(fill->outlineColor),
-        },
-      }];
-    }
-  }
-  if (![map styleLayers]) {
+  NSArray<MLNFFILayerInfo *> *layers = [map styleLayers];
+  if (!layers) {
     // No style yet; restoreAnnotationsAfterStyleLoad() adds them later.
     return;
   }
   annotationsDirty = false;
 
-  auto setSource = ^(NSString *identifier, NSArray *features) {
-    NSDictionary *collection = @{@"type" : @"FeatureCollection", @"features" : features};
-    NSString *json = MLNFFIJSONStringFromObject(collection);
-    mln_geo_json_source_data data = MLN_HANDLE_NULL;
-    mln_geo_json_source_options sourceOptions = {sizeof(mln_geo_json_source_options)};
-    if (mln_geo_json_source_data_create(MLNFFIBufferView(json), &sourceOptions, &data, nullptr) !=
-        MLN_STATUS_OK) {
-      MLNLogError(@"Failed to prepare annotation data for %@", identifier);
-      return;
+  NSMutableArray *features = [NSMutableArray array];
+  for (const auto &[id, annotation] : annotations) {
+    if (const auto *symbol = std::get_if<SymbolAnnotation>(&annotation)) {
+      [features addObject:@{
+        @"type" : @"Feature",
+        @"id" : @(id),
+        @"geometry" : @{@"type" : @"Point", @"coordinates" : @[ @(symbol->geometry.x), @(symbol->geometry.y) ]},
+        @"properties" : @{@"sprite" : @(symbol->icon.c_str())},
+      }];
+    } else if (const auto *line = std::get_if<LineAnnotation>(&annotation)) {
+      [features addObject:@{@"type" : @"Feature", @"id" : @(id), @"geometry" : line->geometry ?: @{}, @"properties" : @{}}];
+    } else if (const auto *fill = std::get_if<FillAnnotation>(&annotation)) {
+      [features addObject:@{@"type" : @"Feature", @"id" : @(id), @"geometry" : fill->geometry ?: @{}, @"properties" : @{}}];
     }
-    mln_map h = handle();
-    if ([map styleSourceWithIdentifier:identifier]) {
-      [map perform:@"update annotations"
-            submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-              return mln_map_set_geo_json_source_data(h, MLNFFIBufferView(identifier), data,
-                                                      completion, diagnostic);
-            }];
-    } else {
-      [map perform:@"add annotations"
-            submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-              return mln_map_add_geo_json_source_data(h, MLNFFIBufferView(identifier), data,
-                                                      completion, diagnostic);
-            }];
-    }
-    mln_geo_json_source_data_release(data);
-  };
-  setSource(FillsSource, fills);
-  setSource(LinesSource, lines);
-  setSource(PointsSource, points);
+  }
 
-  auto ensureLayer = ^(NSDictionary *layer) {
-    if (![map styleLayerWithIdentifier:layer[@"id"]]) {
-      NSString *message;
-      if ([map addStyleLayerJSON:layer belowLayer:nil message:&message] != MLN_STATUS_OK) {
-        MLNLogError(@"Failed to add annotation layer %@: %@", layer[@"id"], message);
+  mln_map h = handle();
+  NSString *json = MLNFFIJSONStringFromObject(@{@"type" : @"FeatureCollection", @"features" : features});
+  mln_geo_json_source_data data = MLN_HANDLE_NULL;
+  mln_geo_json_source_options sourceOptions = {sizeof(mln_geo_json_source_options)};
+  if (mln_geo_json_source_data_create(MLNFFIBufferView(json), &sourceOptions, &data, nullptr) !=
+      MLN_STATUS_OK) {
+    MLNLogError(@"Failed to prepare the annotations");
+    return;
+  }
+  NSMutableSet<NSString *> *existingLayers = [NSMutableSet set];
+  for (MLNFFILayerInfo *info in layers) {
+    [existingLayers addObject:info.identifier];
+  }
+  if (![map styleSourceWithIdentifier:AnnotationSourceID]) {
+    [map perform:@"add the annotation source"
+          submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+            return mln_map_add_geo_json_source_data(h, MLNFFIBufferView(AnnotationSourceID), data,
+                                                    completion, diagnostic);
+          }];
+  } else {
+    [map perform:@"update the annotations"
+          submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+            return mln_map_set_geo_json_source_data(h, MLNFFIBufferView(AnnotationSourceID), data,
+                                                    completion, diagnostic);
+          }];
+  }
+  mln_geo_json_source_data_release(data);
+
+  NSString *message;
+  if (![existingLayers containsObject:PointLayerID]) {
+    NSDictionary *pointLayer = @{
+      @"id" : PointLayerID,
+      @"type" : @"symbol",
+      @"source" : AnnotationSourceID,
+      @"source-layer" : PointLayerID,
+      @"filter" : @[ @"==", @[ @"geometry-type" ], @"Point" ],
+      @"layout" : @{
+        @"icon-image" : @[ @"image", @[ @"concat", [AnnotationSourceID stringByAppendingString:@"."],
+                                         @[ @"to-string", @[ @"get", @"sprite" ] ] ] ],
+        @"icon-allow-overlap" : @YES,
+        @"icon-ignore-placement" : @YES,
+      },
+    };
+    if ([map addStyleLayerJSON:pointLayer belowLayer:nil message:&message] != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to add the annotation point layer: %@", message);
+    }
+  }
+
+  // One layer per shape annotation, below the point layer (Line/Fill
+  // AnnotationImpl::updateStyle()); removed annotations lose theirs.
+  for (MLNFFILayerInfo *info in layers) {
+    if (![info.identifier hasPrefix:ShapeLayerPrefix]) {
+      continue;
+    }
+    AnnotationID id = strtoull([info.identifier substringFromIndex:ShapeLayerPrefix.length].UTF8String, nullptr, 10);
+    if (!annotations.count(id) || std::holds_alternative<SymbolAnnotation>(annotations[id])) {
+      [map removeStyleLayer:info.identifier message:nil];
+    }
+  }
+  for (const auto &[id, annotation] : annotations) {
+    NSString *layerID = ShapeLayerID(id);
+    NSDictionary *paint;
+    NSString *type;
+    NSDictionary *layout = @{};
+    if (const auto *line = std::get_if<LineAnnotation>(&annotation)) {
+      type = @"line";
+      layout = @{@"line-join" : @"round"};
+      paint = @{
+        @"line-opacity" : @(line->opacity),
+        @"line-width" : @(line->width),
+        @"line-color" : MLNStyleJSONFromColor(line->color ?: UIColor.blackColor),
+      };
+    } else if (const auto *fill = std::get_if<FillAnnotation>(&annotation)) {
+      type = @"fill";
+      paint = @{
+        @"fill-opacity" : @(fill->opacity),
+        @"fill-color" : MLNStyleJSONFromColor(fill->color ?: UIColor.blackColor),
+        @"fill-outline-color" : MLNStyleJSONFromColor(fill->outlineColor ?: UIColor.blackColor),
+      };
+    } else {
+      continue;
+    }
+    if (![existingLayers containsObject:layerID]) {
+      NSDictionary *layer = @{
+        @"id" : layerID,
+        @"type" : type,
+        @"source" : AnnotationSourceID,
+        @"source-layer" : layerID,
+        @"filter" : @[ @"==", @[ @"id" ], @(id) ],
+        @"layout" : layout,
+        @"paint" : paint,
+      };
+      if ([map addStyleLayerJSON:layer belowLayer:PointLayerID message:&message] != MLN_STATUS_OK) {
+        MLNLogError(@"Failed to add annotation layer %@: %@", layerID, message);
+      }
+    } else {
+      for (NSString *property in paint) {
+        [map setStyleLayerProperty:property layer:layerID value:paint[property] message:nil];
       }
     }
-  };
-  ensureLayer(@{
-    @"id" : FillsLayer,
-    @"type" : @"fill",
-    @"source" : FillsSource,
-    @"paint" : @{
-      @"fill-color" : @[ @"to-color", @[ @"get", @"color" ] ],
-      @"fill-opacity" : @[ @"get", @"opacity" ],
-      @"fill-outline-color" : @[ @"to-color", @[ @"get", @"outline" ] ],
-    },
-  });
-  ensureLayer(@{
-    @"id" : LinesLayer,
-    @"type" : @"line",
-    @"source" : LinesSource,
-    @"layout" : @{@"line-join" : @"round"},
-    @"paint" : @{
-      @"line-color" : @[ @"to-color", @[ @"get", @"color" ] ],
-      @"line-opacity" : @[ @"get", @"opacity" ],
-      @"line-width" : @[ @"get", @"width" ],
-    },
-  });
-  ensureLayer(@{
-    @"id" : PointsLayer,
-    @"type" : @"symbol",
-    @"source" : PointsSource,
-    @"layout" : @{
-      @"icon-image" : @[ @"get", @"icon" ],
-      @"icon-allow-overlap" : @YES,
-      @"icon-ignore-placement" : @YES,
-    },
-  });
+  }
 }
 
 std::vector<AnnotationID> Map::queryPointAnnotations(const ScreenBox &box) const {
   mln_screen_point points[2] = {{box.min.x, box.min.y}, {box.max.x, box.max.y}};
-  NSArray<NSDictionary *> *features =
-      queryRenderedFeatures(points, 2, MLN_RENDERED_QUERY_GEOMETRY_TYPE_BOX,
-                            [NSSet setWithObject:PointsLayer], nil);
+  NSArray<NSDictionary *> *features = queryRenderedFeatures(
+      points, 2, MLN_RENDERED_QUERY_GEOMETRY_TYPE_BOX, [NSSet setWithObject:PointLayerID], nil);
   std::vector<AnnotationID> ids;
   for (NSDictionary *feature in features) {
-    NSNumber *tag = feature[@"properties"][AnnotationTagProperty];
-    if (tag && std::find(ids.begin(), ids.end(), tag.unsignedLongLongValue) == ids.end()) {
+    NSNumber *tag = feature[@"id"];
+    if ([tag isKindOfClass:[NSNumber class]] &&
+        std::find(ids.begin(), ids.end(), tag.unsignedLongLongValue) == ids.end()) {
       ids.push_back(tag.unsignedLongLongValue);
     }
   }
@@ -782,14 +814,23 @@ std::vector<AnnotationID> Map::queryPointAnnotations(const ScreenBox &box) const
 }
 
 std::vector<AnnotationID> Map::queryShapeAnnotations(const ScreenBox &box) const {
+  NSMutableSet<NSString *> *shapeLayers = [NSMutableSet set];
+  for (const auto &[id, annotation] : annotations) {
+    if (!std::holds_alternative<SymbolAnnotation>(annotation)) {
+      [shapeLayers addObject:ShapeLayerID(id)];
+    }
+  }
+  if (!shapeLayers.count) {
+    return {};
+  }
   mln_screen_point points[2] = {{box.min.x, box.min.y}, {box.max.x, box.max.y}};
-  NSArray<NSDictionary *> *features = queryRenderedFeatures(
-      points, 2, MLN_RENDERED_QUERY_GEOMETRY_TYPE_BOX,
-      [NSSet setWithObjects:FillsLayer, LinesLayer, nil], nil);
+  NSArray<NSDictionary *> *features =
+      queryRenderedFeatures(points, 2, MLN_RENDERED_QUERY_GEOMETRY_TYPE_BOX, shapeLayers, nil);
   std::vector<AnnotationID> ids;
   for (NSDictionary *feature in features) {
-    NSNumber *tag = feature[@"properties"][AnnotationTagProperty];
-    if (tag && std::find(ids.begin(), ids.end(), tag.unsignedLongLongValue) == ids.end()) {
+    NSNumber *tag = feature[@"id"];
+    if ([tag isKindOfClass:[NSNumber class]] &&
+        std::find(ids.begin(), ids.end(), tag.unsignedLongLongValue) == ids.end()) {
       ids.push_back(tag.unsignedLongLongValue);
     }
   }

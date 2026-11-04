@@ -16,7 +16,7 @@ static const MLNStylePropertyDescriptor MLNCircleCircleSortKeyProperty = {
     MLNStyleValueTypeNumber,
     YES,
     YES,
-    NULL,
+    "0",
     NULL,
     0,
 };

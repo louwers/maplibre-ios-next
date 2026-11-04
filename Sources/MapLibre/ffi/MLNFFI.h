@@ -161,6 +161,14 @@ FOUNDATION_EXTERN NSString *MLNFFIStatusDescription(mln_status status);
 /// Delivers queued events now. Main thread only.
 - (void)drainEvents;
 
+/// The event types that a blocking call on the main thread delivers before it
+/// returns: those classic's core raised within the call (camera changes, the
+/// start of a style load). Other events wait for the next turn of the main
+/// queue, as classic delivered them after the call. Settable around a call
+/// whose other events classic raised synchronously, such as loading a style
+/// from JSON.
+@property (nonatomic) mln_runtime_event_flags synchronousEventTypes;
+
 /// Releases the native map. Further calls fail with an invalid-state status.
 - (void)invalidate;
 

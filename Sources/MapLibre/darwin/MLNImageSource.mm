@@ -2,6 +2,8 @@
 
 #import "MLNImageSource.h"
 
+#include <cmath>
+
 #import "MLNGeometry_Private.h"
 #import "MLNLoggingConfiguration_Private.h"
 #import "MLNSource_Private.h"
@@ -40,6 +42,35 @@ static NSData *MLNImageSourcePixels(MLNImage *image, uint32_t *width, uint32_t *
   return [NSMutableData dataWithLength:4];
 }
 
+/// The C API refuses an image source whose corners all coincide, which
+/// classic's core accepted (it draws nothing). Such a quad is sent with its
+/// corners a billionth of a degree apart instead, which draws nothing either.
+static std::array<mln_lat_lng, 4> MLNSendableCoordinates(std::array<mln_lat_lng, 4> coordinates) {
+  for (size_t i = 1; i < 4; i++) {
+    if (coordinates[i].latitude != coordinates[0].latitude ||
+        coordinates[i].longitude != coordinates[0].longitude) {
+      return coordinates;
+    }
+  }
+  const double nudge = 1e-9;
+  coordinates[1].longitude += nudge;
+  coordinates[2].latitude -= nudge;
+  coordinates[2].longitude += nudge;
+  coordinates[3].latitude -= nudge;
+  return coordinates;
+}
+
+/// The quad as the source was given it, undoing MLNSendableCoordinates().
+static std::array<mln_lat_lng, 4> MLNReportedCoordinates(std::array<mln_lat_lng, 4> coordinates) {
+  for (size_t i = 1; i < 4; i++) {
+    if (std::abs(coordinates[i].latitude - coordinates[0].latitude) > 1e-8 ||
+        std::abs(coordinates[i].longitude - coordinates[0].longitude) > 1e-8) {
+      return coordinates;
+    }
+  }
+  return {coordinates[0], coordinates[0], coordinates[0], coordinates[0]};
+}
+
 @implementation MLNImageSource {
   // The configuration of a pending source.
   std::array<mln_lat_lng, 4> _coordinates;
@@ -58,7 +89,7 @@ static NSData *MLNImageSourcePixels(MLNImage *image, uint32_t *width, uint32_t *
 - (mln_status)mgl_addToMap:(MLNFFIMap *)map message:(NSString **)message {
   mln_map handle = map.handle;
   NSString *identifier = self.identifier;
-  std::array<mln_lat_lng, 4> coordinates = _coordinates;
+  std::array<mln_lat_lng, 4> coordinates = MLNSendableCoordinates(_coordinates);
   if (_pendingURL) {
     NSString *url = _pendingURL;
     return [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
@@ -186,12 +217,15 @@ static NSData *MLNImageSourcePixels(MLNImage *image, uint32_t *width, uint32_t *
         }
       }
       message:nil];
-  return MLNCoordinateQuadFromLatLngArray(coordinates);
+  return MLNCoordinateQuadFromLatLngArray(MLNReportedCoordinates(coordinates));
 }
 
 - (void)setCoordinates:(MLNCoordinateQuad)coordinateQuad {
   MLNAssertStyleSourceIsValid();
   std::array<mln_lat_lng, 4> coordinates = MLNLatLngArrayFromCoordinateQuad(coordinateQuad);
+  if (self.mgl_map) {
+    coordinates = MLNSendableCoordinates(coordinates);
+  }
   MLNFFIMap *map = self.mgl_map;
   if (!map) {
     _coordinates = coordinates;

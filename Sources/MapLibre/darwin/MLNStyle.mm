@@ -92,8 +92,9 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
 @implementation MLNStyle {
   NSMapTable<NSString *, MLNStyleLayer *> *_layerObjects;
   NSMapTable<NSString *, MLNSource *> *_sourceObjects;
-  // Layers waiting for their source: {layer, json, before}.
-  NSMutableArray<NSArray *> *_deferredLayers;
+  // Hidden sources standing in for sources that layers refer to:
+  // placeholder identifier -> the source's identifier.
+  NSMutableDictionary<NSString *, NSString *> *_placeholderSources;
   NSDictionary *_loadedStyle;
 }
 
@@ -135,7 +136,7 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
     _mgl_map = map;
     _layerObjects = [NSMapTable strongToWeakObjectsMapTable];
     _sourceObjects = [NSMapTable strongToWeakObjectsMapTable];
-    _deferredLayers = [NSMutableArray array];
+    _placeholderSources = [NSMutableDictionary dictionary];
     _customLayers = [NSMutableDictionary dictionary];
     _localizedLayersByIdentifier = [NSMutableDictionary dictionary];
     MLNLogDebug(@"Initializing with style name: %@ stylable: %@", self.name, stylable);
@@ -179,7 +180,7 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   }
   [_layerObjects removeAllObjects];
   [_sourceObjects removeAllObjects];
-  [_deferredLayers removeAllObjects];
+  [_placeholderSources removeAllObjects];
   _mgl_map = nil;
 }
 
@@ -211,36 +212,78 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   return [_sourceObjects objectForKey:identifier];
 }
 
-- (NSString *)mgl_topInsertionLayerIdentifier {
-  for (MLNFFILayerInfo *info in [self.mgl_map styleLayers]) {
-    if ([info.identifier hasPrefix:MLNInternalStyleIdentifierPrefix]) {
-      return info.identifier;
-    }
+- (NSString *)mgl_placeholderSourceForSource:(NSString *)identifier layerType:(NSString *)layerType {
+  NSString *kind;
+  NSDictionary *source;
+  if ([layerType isEqualToString:@"raster"]) {
+    kind = @"raster";
+    source = @{@"type" : @"raster", @"tiles" : @[]};
+  } else if ([layerType isEqualToString:@"hillshade"] || [layerType isEqualToString:@"color-relief"]) {
+    kind = @"raster-dem";
+    source = @{@"type" : @"raster-dem", @"tiles" : @[]};
+  } else {
+    kind = @"vector";
+    source = @{@"type" : @"geojson", @"data" : @{@"type" : @"FeatureCollection", @"features" : @[]}};
   }
-  return nil;
+  NSString *placeholder = [NSString
+      stringWithFormat:@"%@placeholder.%@.%@", MLNInternalStyleIdentifierPrefix, kind, identifier];
+  if (_placeholderSources[placeholder]) {
+    return placeholder;
+  }
+  NSString *message;
+  if ([self.mgl_map addStyleSourceJSON:source identifier:placeholder message:&message] != MLN_STATUS_OK) {
+    MLNLogError(@"Failed to stand in for source %@: %@", identifier, message);
+    return nil;
+  }
+  _placeholderSources[placeholder] = identifier;
+  return placeholder;
 }
 
-- (void)mgl_deferLayer:(MLNStyleLayer *)layer json:(NSDictionary *)json belowLayer:(NSString *)before {
-  MLNLogWarning(@"Layer %@ refers to source %@, which is not in the style yet; it will be added "
-                @"when the source is.",
-                layer.identifier, json[@"source"]);
-  [_deferredLayers addObject:@[ layer, json, before ?: [NSNull null] ]];
+- (NSString *)mgl_sourceIdentifierForMapSource:(NSString *)identifier {
+  return _placeholderSources[identifier] ?: identifier;
 }
 
-- (void)mgl_addDeferredLayersForSource:(NSString *)sourceIdentifier {
-  NSArray<NSArray *> *deferred = [_deferredLayers copy];
-  for (NSArray *entry in deferred) {
-    NSDictionary *json = entry[1];
-    if (![json[@"source"] isEqual:sourceIdentifier]) {
+/// Moves the layers that use placeholders for a source onto the source, now
+/// that it was added: they are taken out, the placeholders removed, and the
+/// layers put back where they were with the source.
+- (void)mgl_movePlaceholderLayersToSource:(NSString *)identifier {
+  NSSet<NSString *> *placeholders =
+      [_placeholderSources keysOfEntriesPassingTest:^BOOL(NSString *key, NSString *value, BOOL *stop) {
+        return [value isEqualToString:identifier];
+      }];
+  if (!placeholders.count) {
+    return;
+  }
+  NSArray<MLNFFILayerInfo *> *layers = [self.mgl_map styleLayers];
+  NSMutableArray<NSArray *> *moved = [NSMutableArray array];
+  for (NSUInteger i = 0; i < layers.count; i++) {
+    if (![placeholders containsObject:layers[i].sourceIdentifier]) {
       continue;
     }
-    [_deferredLayers removeObject:entry];
-    MLNStyleLayer *layer = entry[0];
-    NSString *before = entry[2] == [NSNull null] ? nil : entry[2];
-    if (before && ![self.mgl_map styleLayerWithIdentifier:before]) {
-      before = nil;
+    NSString *before;
+    for (NSUInteger j = i + 1; j < layers.count; j++) {
+      if (![placeholders containsObject:layers[j].sourceIdentifier]) {
+        before = layers[j].identifier;
+        break;
+      }
     }
-    [layer addToStyle:self belowLayer:before ? [self layerWithIdentifier:before] : nil];
+    NSMutableDictionary *json = [MLNReparsableLayerJSON([self.mgl_map styleLayerJSON:layers[i].identifier] ?: @{}) mutableCopy];
+    json[@"source"] = identifier;
+    [moved addObject:@[ json, before ?: [NSNull null] ]];
+  }
+  for (NSArray *entry in moved) {
+    [self.mgl_map removeStyleLayer:entry[0][@"id"] message:nil];
+  }
+  for (NSString *placeholder in placeholders) {
+    [self.mgl_map removeStyleSource:placeholder message:nil];
+    [_placeholderSources removeObjectForKey:placeholder];
+  }
+  for (NSArray *entry in moved) {
+    NSString *before = entry[1] == [NSNull null] ? nil : entry[1];
+    NSString *message;
+    if ([self.mgl_map addStyleLayerJSON:entry[0] belowLayer:before message:&message] != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to move layer %@ onto source %@: %@", entry[0][@"id"], identifier, message);
+    }
   }
 }
 
@@ -299,6 +342,11 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   }
 
   Class sourceClass;
+  // The annotation source was of the core's own type, which no darwin class
+  // represented.
+  if ([info.identifier isEqualToString:@"org.maplibre.annotations"]) {
+    info.type = MLN_STYLE_SOURCE_TYPE_ANNOTATIONS;
+  }
   switch (info.type) {
     case MLN_STYLE_SOURCE_TYPE_VECTOR:
       sourceClass = [MLNVectorTileSource class];
@@ -335,7 +383,7 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
   }
 
   [source addToStylable:self.stylable];
-  [self mgl_addDeferredLayersForSource:source.identifier];
+  [self mgl_movePlaceholderLayersToSource:source.identifier];
 }
 
 - (void)removeSource:(MLNSource *)source {

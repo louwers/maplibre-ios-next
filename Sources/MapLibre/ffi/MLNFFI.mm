@@ -343,7 +343,14 @@ static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
 
 // MARK: - Map
 
+/// Events classic's core raised during the call that caused them: camera
+/// changes and the start of a style load.
+static const mln_runtime_event_flags MLNFFIDefaultSynchronousEventTypes =
+    MLN_RUNTIME_EVENT_FLAG_MAP_CAMERA_WILL_CHANGE | MLN_RUNTIME_EVENT_FLAG_MAP_CAMERA_IS_CHANGING |
+    MLN_RUNTIME_EVENT_FLAG_MAP_CAMERA_DID_CHANGE | MLN_RUNTIME_EVENT_FLAG_MAP_LOADING_STARTED;
+
 @implementation MLNFFIMap {
+  mln_runtime_event_flags _synchronousEventTypes;
   os_unfair_lock _eventLock;
   NSMutableArray<MLNFFIEvent *> *_events;
   BOOL _drainScheduled;
@@ -428,11 +435,16 @@ static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
 - (mln_status)call:(MLNFFISubmit)submit
            consume:(MLNFFIConsume)consume
            message:(NSString **)message {
-  mln_status status = MLNFFICallBlocking(submit, consume, message);
-  if ([NSThread isMainThread]) {
-    [self drainEvents];
+  if (![NSThread isMainThread]) {
+    return MLNFFICallBlocking(submit, consume, message);
   }
+  mln_status status = MLNFFICallBlocking(submit, consume, message);
+  [self drainEventsOfTypes:self.synchronousEventTypes];
   return status;
+}
+
+- (mln_runtime_event_flags)synchronousEventTypes {
+  return _synchronousEventTypes ?: MLNFFIDefaultSynchronousEventTypes;
 }
 
 - (BOOL)perform:(NSString *)label submit:(MLNFFISubmit)submit {
@@ -484,6 +496,15 @@ static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
 }
 
 - (void)drainEvents {
+  [self drainEventsOfTypes:MLN_RUNTIME_EVENT_FLAG_ALL];
+}
+
+// Delivers the queued events whose types are in `types`, in order. Events of
+// other types stay queued, in order, for the asynchronous drain: after a
+// call, classic delivered only the events that the call itself raised
+// (camera changes, ...), while everything else (style and tile loads,
+// rendering, idleness) came on later turns of the run loop.
+- (void)drainEventsOfTypes:(mln_runtime_event_flags)types {
   NSAssert([NSThread isMainThread], @"Map events are delivered on the main thread.");
   // An observer that makes a blocking call drains again; deliver the rest of
   // this batch in order from the outer drain.
@@ -493,10 +514,27 @@ static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
   _draining = YES;
   while (true) {
     os_unfair_lock_lock(&_eventLock);
-    NSArray<MLNFFIEvent *> *events = [_events copy];
-    [_events removeAllObjects];
-    _drainScheduled = NO;
+    NSMutableArray<MLNFFIEvent *> *events = [NSMutableArray array];
+    NSMutableArray<MLNFFIEvent *> *kept = [NSMutableArray array];
+    for (MLNFFIEvent *event in _events) {
+      [(types & (1ULL << event.type)) ? events : kept addObject:event];
+    }
+    [_events setArray:kept];
+    if (types == MLN_RUNTIME_EVENT_FLAG_ALL) {
+      // A full drain empties the queue; later events schedule another.
+      _drainScheduled = NO;
+    }
+    BOOL schedule = _events.count > 0 && !_drainScheduled;
+    if (schedule) {
+      _drainScheduled = YES;
+    }
     os_unfair_lock_unlock(&_eventLock);
+    if (schedule) {
+      __weak MLNFFIMap *weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf drainEvents];
+      });
+    }
     if (!events.count) {
       break;
     }

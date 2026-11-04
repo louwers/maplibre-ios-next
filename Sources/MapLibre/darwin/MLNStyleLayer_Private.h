@@ -104,6 +104,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// The layer's JSON with values the core serializes but does not parse back
+/// (constant formatted text and images) rewritten, so it can be added to a map.
+FOUNDATION_EXTERN NSDictionary *MLNReparsableLayerJSON(NSDictionary *layer);
+
 /// The class that represents layers of the given style-spec type.
 FOUNDATION_EXTERN Class MLNStyleLayerClassForType(NSString *type);
 

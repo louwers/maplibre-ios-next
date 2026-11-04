@@ -57,7 +57,7 @@ static const MLNStylePropertyDescriptor MLNSymbolIconImageProperty = {
     MLNStyleValueTypeResolvedImage,
     YES,
     YES,
-    NULL,
+    "\"\"",
     NULL,
     0,
 };
@@ -248,7 +248,7 @@ static const MLNStylePropertyDescriptor MLNSymbolSymbolSortKeyProperty = {
     MLNStyleValueTypeNumber,
     YES,
     YES,
-    NULL,
+    "0",
     NULL,
     0,
 };
@@ -496,7 +496,7 @@ static const MLNStylePropertyDescriptor MLNSymbolTextVariableAnchorProperty = {
     MLNStyleValueTypeEnumArray,
     YES,
     NO,
-    NULL,
+    "[]",
     MLNSymbolTextVariableAnchorValues,
     sizeof(MLNSymbolTextVariableAnchorValues) / sizeof(MLNStyleEnumValue),
 };
@@ -517,7 +517,7 @@ static const MLNStylePropertyDescriptor MLNSymbolTextVariableAnchorOffsetPropert
     MLNStyleValueTypeVariableAnchorOffsetCollection,
     YES,
     YES,
-    NULL,
+    "[]",
     MLNSymbolTextVariableAnchorOffsetValues,
     sizeof(MLNSymbolTextVariableAnchorOffsetValues) / sizeof(MLNStyleEnumValue),
 };
@@ -531,7 +531,7 @@ static const MLNStylePropertyDescriptor MLNSymbolTextWritingModeProperty = {
     MLNStyleValueTypeEnumArray,
     YES,
     NO,
-    NULL,
+    "[]",
     MLNSymbolTextWritingModeValues,
     sizeof(MLNSymbolTextWritingModeValues) / sizeof(MLNStyleEnumValue),
 };

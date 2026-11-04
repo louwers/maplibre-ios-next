@@ -101,14 +101,14 @@
   fit.bearing = current.bearing;
   fit.pitch = current.pitch;
   mln_map handle = _map.handle;
-  __block mln_camera camera = {};
+  __block mln_camera_options camera = {sizeof(mln_camera_options)};
   __block BOOL found = NO;
   [_map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
     return mln_map_camera_for_lat_lngs(handle, latLngs, 4, &fit, completion, diagnostic);
   }
       consume:^(const mln_completion_result *result) {
         if (result->value) {
-          camera = *(const mln_camera *)result->value;
+          camera = *(const mln_camera_options *)result->value;
           found = YES;
         }
       }

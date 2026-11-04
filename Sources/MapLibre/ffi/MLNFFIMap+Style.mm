@@ -55,13 +55,21 @@ static MLNFFISourceInfo *MLNFFISourceInfoFromC(const mln_style_source_info *info
             message:message];
 }
 
+// Classic parsed a style JSON within the call and reported it loaded (or
+// failed) before returning.
 - (mln_status)loadStyleJSON:(NSString *)JSON message:(NSString **)message {
   mln_map map = self.handle;
-  return [self call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+  mln_runtime_event_flags types = self.synchronousEventTypes;
+  self.synchronousEventTypes = types | MLN_RUNTIME_EVENT_FLAG_MAP_STYLE_LOADED |
+                               MLN_RUNTIME_EVENT_FLAG_MAP_LOADING_FAILED |
+                               MLN_RUNTIME_EVENT_FLAG_MAP_SPRITE_REQUESTED;
+  mln_status status = [self call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
     return mln_map_set_style_json(map, MLNFFIBufferView(JSON), completion, diagnostic);
   }
-            consume:nil
-            message:message];
+                         consume:nil
+                         message:message];
+  self.synchronousEventTypes = types;
+  return status;
 }
 
 - (NSString *)loadedStyleJSON {

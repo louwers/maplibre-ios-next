@@ -16,7 +16,7 @@ static const MLNStylePropertyDescriptor MLNFillFillSortKeyProperty = {
     MLNStyleValueTypeNumber,
     YES,
     YES,
-    NULL,
+    "0",
     NULL,
     0,
 };
@@ -56,7 +56,7 @@ static const MLNStylePropertyDescriptor MLNFillFillOutlineColorProperty = {
     MLNStyleValueTypeColor,
     NO,
     YES,
-    NULL,
+    "\"rgba(0, 0, 0, 0)\"",
     NULL,
     0,
 };
@@ -66,7 +66,7 @@ static const MLNStylePropertyDescriptor MLNFillFillPatternProperty = {
     MLNStyleValueTypeResolvedImage,
     NO,
     YES,
-    NULL,
+    "\"\"",
     NULL,
     0,
 };

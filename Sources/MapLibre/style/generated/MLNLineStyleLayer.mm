@@ -56,7 +56,7 @@ static const MLNStylePropertyDescriptor MLNLineLineRoundLimitProperty = {
     MLNStyleValueTypeNumber,
     YES,
     NO,
-    "1.05",
+    "1",
     NULL,
     0,
 };
@@ -66,7 +66,7 @@ static const MLNStylePropertyDescriptor MLNLineLineSortKeyProperty = {
     MLNStyleValueTypeNumber,
     YES,
     YES,
-    NULL,
+    "0",
     NULL,
     0,
 };
@@ -96,7 +96,7 @@ static const MLNStylePropertyDescriptor MLNLineLineDasharrayProperty = {
     MLNStyleValueTypeNumberArray,
     NO,
     NO,
-    NULL,
+    "[]",
     NULL,
     0,
 };
@@ -146,7 +146,7 @@ static const MLNStylePropertyDescriptor MLNLineLinePatternProperty = {
     MLNStyleValueTypeResolvedImage,
     NO,
     YES,
-    NULL,
+    "\"\"",
     NULL,
     0,
 };

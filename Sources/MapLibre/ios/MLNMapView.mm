@@ -347,7 +347,8 @@ public:
 
 // MARK: - Private -
 
-@interface MLNMapView () <UIGestureRecognizerDelegate,
+@interface MLNMapView () <MLNFFIStylable,
+                          UIGestureRecognizerDelegate,
                           MLNLocationManagerDelegate,
                           MLNSMCalloutViewDelegate,
                           MLNCalloutViewDelegate,
@@ -1602,6 +1603,19 @@ public:
   MLNAssertIsMainThread();
 
   self.needsDisplayRefresh = YES;
+}
+
+// MARK: MLNFFIStylable
+
+- (uint64_t)mgl_renderSession {
+  return _mbglMap ? _mbglMap->getRenderSession() : MLN_HANDLE_NULL;
+}
+
+- (void)mgl_setNeedsRerender {
+  [self setNeedsRerender];
+  if (_mbglView) {
+    _mbglView->setNeedsForcedFrame();
+  }
 }
 
 - (void)willTerminate {
