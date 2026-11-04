@@ -1,3 +1,4 @@
+// Based on platform/ios/src/MLNScaleBar.mm at ios-v7.0.0
 #import "MLNScaleBar.h"
 #import "MapLibre.h"
 
@@ -282,8 +283,10 @@ static const CGFloat MLNScaleBarMinimumBarWidth = 30.0;  // Arbitrary
 
   while (row < table + count) {
     if (row->distance > maximumDistance) {
-      // use the previous row
-      NSAssert(row != table, @"");
+      // use the previous row; a map view without a width yet has none
+      if (row == table) {
+        return *table;
+      }
       return *(row - 1);
     }
     ++row;
