@@ -12,7 +12,7 @@ let ffi: Package.Dependency =
   ? .package(path: ".local-ffi/maplibre-native-next-ffi-distribution")
   : .package(
     url: "https://github.com/louwers/maplibre-native-next-ffi-distribution",
-    exact: "0.0.6"
+    exact: "0.0.7"
   )
 
 let package = Package(

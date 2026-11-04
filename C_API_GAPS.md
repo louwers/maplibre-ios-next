@@ -1,13 +1,62 @@
 # Where the C API falls short
 
 maplibre-ios-next implements the public API of MapLibre iOS 7.0.0 on the C API
-of [MapLibre Native FFI](https://github.com/maplibre/maplibre-native-ffi)
-0.202610.3, as published in
-[maplibre-native-ffi-distribution](https://swiftpackageindex.com/maplibre/maplibre-native-ffi-distribution).
+of [MapLibre Native FFI](https://github.com/maplibre/maplibre-native-ffi).
 Classic MapLibre iOS called the C++ core directly. This document lists every
 place where the C API could not express what classic did, and what this
 package does instead. The parity harness ([Parity/](Parity/)) measures the
 remaining differences.
+
+The package depends on the C API as implemented on
+[maplibre-native-next](https://github.com/louwers/maplibre-native-next), a port
+of the core to Rust that renders through wgpu, published as
+[maplibre-native-next-ffi-distribution](https://github.com/louwers/maplibre-native-next-ffi-distribution).
+The sections after the next one were written against the C++ implementation,
+[maplibre-native-ffi-distribution](https://swiftpackageindex.com/maplibre/maplibre-native-ffi-distribution)
+0.202610.3; they describe the C API itself, so they hold for both.
+
+## On maplibre-native-next
+
+maplibre-native-next-ffi-distribution 0.0.7 implements 172 of the C API's 203
+functions (maplibre/maplibre-native-ffi#1589, with branch `next-ios` of
+louwers/maplibre-native-ffi on top). The parity harness finds MapLibre iOS's
+own tests with the same outcomes as classic, every camera, delegate,
+annotation, style, offline and style-property trace the same except the
+feature state removals below, and the render tests close to classic. What
+differs from the C++ implementation:
+
+- **Rendering is the Rust core's.** Of 171 render tests through
+  `MLNMapSnapshotter`, 132 are pixel-identical to classic, 27 differ in under
+  1 % of pixels, and 12 differ more: `fill-extrusion-opacity/function`,
+  `line-gradient/gradient`, `line-gradient-dasharray/*`,
+  `line-gradient/color-interpolation-rgb-hcl-lab`, `line-triangulation/*`,
+  `line-miter-limit/global-state`, `line-translate/function`,
+  `raster-masking/overlapping-vector`, `tilejson-bounds/default` and
+  `within/paint-circle`. These are differences of maplibre-native-next's
+  renderer, not of this package. Of the 10 render tests through an on-screen
+  `MLNMapView`, 9 are identical and 1 differs in under 1 % of pixels.
+- **The Metal layer's opacity** (`MLNMapView.opaque`). wgpu configures the
+  surface as opaque and marks the `CAMetalLayer` opaque, so the transparent
+  pixels of a style without a background would show black. The map view
+  restores its own opacity on the layer on each display-link tick; the
+  drawables keep their alpha. wgpu also creates its own Metal device and turns
+  off `allowsNextDrawableTimeout`.
+- **No NSURLSession hook** (`MLNNetworkConfiguration.sessionConfiguration`,
+  `.delegate`). maplibre-native-next fetches over HTTP with its own client,
+  not NSURLSession, and has no `MLNNativeNetworkManager`. Only the session
+  configuration's additional HTTP headers apply, through the C API's header
+  transform. Offline downloads of `file:` URLs still work through the resource
+  provider described under Offline storage.
+- **Camera transitions**: one at a time, as in upstream MapLibre Native; the
+  map view cancels before each change anyway, as it did in classic.
+- **Not implemented by maplibre-native-next**: custom vector sources (not
+  used by MapLibre iOS), texture rings, and the rendering statistics overlay
+  (`-[MLNMapView enableRenderingStatsView:]`: the flag is kept, nothing is
+  drawn).
+  Calls the C API leaves unimplemented return `MLN_STATUS_UNSUPPORTED`; this
+  package treats them as doing nothing and logs the first of each.
+- **Text**: `number-format` with a currency formats without the currency
+  symbol in the Rust core.
 
 ## Summary
 
