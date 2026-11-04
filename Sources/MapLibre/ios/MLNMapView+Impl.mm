@@ -112,12 +112,11 @@ void MLNMapViewImpl::createView() {
 
   mln_metal_surface_descriptor descriptor = {sizeof(mln_metal_surface_descriptor)};
   CGSize size = view.bounds.size;
-  descriptor.extent = {(uint32_t)MAX(1, round(size.width)), (uint32_t)MAX(1, round(size.height)),
-                       scaleFactor};
+  descriptor.logical_size = {(uint32_t)MAX(1, round(size.width)),
+                             (uint32_t)MAX(1, round(size.height))};
   descriptor.layer = (__bridge void *)layer;
   mln_render_session_attach_options options = {sizeof(mln_render_session_attach_options)};
   options.driver = MLN_RENDER_DRIVER_CORE_WORKER;
-  options.producer_sync_kind = MLN_GPU_SYNC_CPU_COMPLETE;
   options.frame_wake.callback = frameWakeCallback;
   options.frame_wake.user_data = (void *)CFBridgingRetain(observer);
   options.frame_wake.release_user_data = releaseObserver;
@@ -147,19 +146,22 @@ void MLNMapViewImpl::createView() {
 void MLNMapViewImpl::deleteView() { rendering = false; }
 
 void MLNMapViewImpl::display() {
+  // A surface session may make the layer opaque when it configures it (wgpu
+  // does), which turns the transparent pixels of a style without a background
+  // black. The drawables keep their alpha, so the view's own opacity applies.
+  if (metalView.layer.opaque != opaque) {
+    metalView.layer.opaque = opaque;
+  }
   if (!rendering || session == MLN_HANDLE_NULL || frameOutstanding) {
     return;
   }
+  // A surface session shows each frame that it draws.
   mln_frame_demand demand = {sizeof(mln_frame_demand)};
-  demand.flags = MLN_FRAME_DEMAND_PRESENT;
-  if (forceNextFrame || lastFrameNeedsRepaint) {
-    demand.flags |= MLN_FRAME_DEMAND_FORCE;
-  } else {
-    demand.flags |= MLN_FRAME_DEMAND_WAIT_FOR_UPDATE;
-  }
+  demand.flags = forceNextFrame || lastFrameNeedsRepaint ? MLN_FRAME_DEMAND_FORCE
+                                                         : MLN_FRAME_DEMAND_WAIT_FOR_UPDATE;
   demand.token = nextFrameToken++;
   mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
-  mln_status status = mln_render_session_request_frame(session, &demand, &diagnostic);
+  mln_status status = mln_render_session_demand_frame(session, &demand, &diagnostic);
   if (status == MLN_STATUS_OK) {
     frameOutstanding = true;
     forceNextFrame = false;

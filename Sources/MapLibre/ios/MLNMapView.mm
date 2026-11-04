@@ -6911,8 +6911,8 @@ static void *windowScreenContext = &windowScreenContext;
                                    fullyRendered:frameEncodingTime:frameRenderingTime:)]) {
     [self.delegate mapViewDidFinishRenderingFrame:self
                                     fullyRendered:fullyRendered
-                                frameEncodingTime:stats.encoding_time
-                               frameRenderingTime:stats.rendering_time];
+                                frameEncodingTime:stats.encoding_time_ms / 1000.0
+                               frameRenderingTime:stats.rendering_time_ms / 1000.0];
   } else if ([self.delegate respondsToSelector:@selector(mapViewDidFinishRenderingFrame:
                                                                           fullyRendered:)]) {
     [self.delegate mapViewDidFinishRenderingFrame:self fullyRendered:fullyRendered];

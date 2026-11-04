@@ -4,12 +4,15 @@ MapLibre iOS with the public API of
 [MapLibre iOS](https://github.com/maplibre/maplibre-native/tree/main/platform/ios)
 7.0.0, implemented on the C API of
 [MapLibre Native FFI](https://github.com/maplibre/maplibre-native-ffi) instead
-of on the C++ core. It depends on the FFI's published Swift package,
-[maplibre-native-ffi-distribution](https://swiftpackageindex.com/maplibre/maplibre-native-ffi-distribution)
-0.202610.3, and links nothing else of MapLibre Native.
+of on the C++ core, running on
+[maplibre-native-next](https://github.com/louwers/maplibre-native-next), a port
+of the core to Rust that renders through wgpu on Metal. It depends on that C
+API's Swift package,
+[maplibre-native-next-ffi-distribution](https://github.com/louwers/maplibre-native-next-ffi-distribution)
+0.0.7, and links nothing else of MapLibre Native.
 
 ```swift
-.package(url: "https://github.com/louwers/maplibre-ios-next", branch: "main")
+.package(url: "https://github.com/louwers/maplibre-ios-next", from: "0.1.0")
 // ...
 .product(name: "MapLibre", package: "maplibre-ios-next")
 ```
@@ -39,7 +42,8 @@ arm64 simulators.
     (`scripts/style-code/`), reading and writing properties as style-spec
     JSON.
 - **Where the C API falls short**, [C_API_GAPS.md](C_API_GAPS.md) says what
-  classic did, what the C API lacks and what this package does instead.
+  classic did, what the C API lacks and what this package does instead, and
+  what differs on maplibre-native-next.
 
 ## Comparing with classic MapLibre iOS
 
@@ -63,6 +67,7 @@ map views. See [Parity/README.md](Parity/README.md).
 
 ```sh
 scripts/fetch-upstream.sh                  # upstream sources and the classic XCFramework into .upstream/
+scripts/build-local-ffi.sh ~/src/maplibre-native-ffi   # the C API from a checkout; then MLN_LOCAL_FFI=1
 xcodebuild -scheme MapLibreNext -destination 'generic/platform=iOS Simulator' build
 scripts/check-file.sh Sources/MapLibre/darwin/MLNStyle.mm   # type-check one file
 (cd scripts/style-code && npm ci && node generate.mjs)      # regenerate style code
