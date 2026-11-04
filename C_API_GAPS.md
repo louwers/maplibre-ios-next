@@ -487,7 +487,8 @@ classic did, what the C API offers, and what this package does.
   `file:` URLs. The C API's network loader refuses them ("native loader cannot
   request this resource"), so such a pack stopped after the style. The shared
   runtime registers a resource provider (`mln_runtime_set_resource_provider`)
-  for `file://**` that reads the file; map loads never reach it, since they
+  for `file://**` that reads the file with NSURLSession, as classic did, so
+  errors have its wording. Map loads never reach it, since they
   read `file:` URLs before the network. MapLibre iOS's API has no way for an
   app to register a provider of its own, so nothing can replace this one.
 - **Response error details** (`MLNOfflinePackErrorNotification`). Classic's

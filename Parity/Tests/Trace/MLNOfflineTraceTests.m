@@ -87,10 +87,23 @@
     }
     return p.state == MLNOfflinePackStateComplete;
   }];
+  // The distinct errors, as the number of retries depends on timing.
+  NSMutableSet<NSString *> *errors = [NSMutableSet set];
+  id errorObserver = [NSNotificationCenter.defaultCenter
+      addObserverForName:MLNOfflinePackErrorNotification
+                  object:pack
+                   queue:nil
+              usingBlock:^(NSNotification *notification) {
+                NSError *error = notification.userInfo[MLNOfflinePackUserInfoKeyError];
+                [errors addObject:[NSString stringWithFormat:@"%ld: %@", (long)error.code,
+                                                             error.localizedFailureReason]];
+              }];
   [pack resume];
   XCTWaiterResult result = [XCTWaiter waitForExpectations:@[ complete ] timeout:10];
+  [NSNotificationCenter.defaultCenter removeObserver:errorObserver];
   [self.recorder record:@"completed" value:@(result == XCTWaiterResultCompleted)];
   [self.recorder record:@"states" value:states];
+  [self.recorder record:@"errors" value:[errors.allObjects sortedArrayUsingSelector:@selector(compare:)]];
   MLNOfflinePackProgress progress = pack.progress;
   [self.recorder record:@"progress" value:@{
     @"countOfResourcesCompleted" : @(progress.countOfResourcesCompleted),

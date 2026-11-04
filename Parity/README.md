@@ -104,6 +104,10 @@ need no glyphs or sprites.
 with upstream's expected images, using pixelmatch's colour metric and a
 threshold of 0.1, and writes difference images to `out/render-diff/`.
 
+On GitHub's macOS runners, a few hillshade tests differ by up to 0.1 % of
+pixels, a different few in each run; on a Mac they are identical. Treat
+differences of that size in hillshade on CI as noise of the runner's GPU.
+
 ## Reading the report
 
 - **Status**: whether each part built and ran.

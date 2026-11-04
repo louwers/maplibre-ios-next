@@ -263,31 +263,46 @@ static void MLNFFIRuntimeEventCallback(void *userData, const mln_event_batch_vie
 
 // MARK: - Runtime
 
+static void MLNFFICompleteFileResourceRequest(mln_resource_request handle, NSData *data,
+                                              NSError *error) {
+  NSString *errorMessage;
+  mln_resource_response response = {sizeof(mln_resource_response)};
+  if (error) {
+    // As classic's HTTP file source reported a failed file: request.
+    errorMessage = error.localizedDescription;
+    response.status = MLN_RESOURCE_RESPONSE_STATUS_ERROR;
+    response.error_reason = MLN_RESOURCE_ERROR_REASON_OTHER;
+    response.error_message = MLNFFIBufferView(errorMessage);
+  } else {
+    response.status = MLN_RESOURCE_RESPONSE_STATUS_OK;
+  }
+  if (data) {
+    response.bytes = (const uint8_t *)data.bytes;
+    response.byte_count = data.length;
+  }
+  mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+  if (mln_resource_request_complete(handle, &response, &diagnostic) != MLN_STATUS_OK) {
+    mln_resource_request_release(handle);
+  }
+}
+
 static void MLNFFIFileResourceProviderCallback(void *userData,
                                                const mln_resource_request_info *request,
                                                mln_resource_request handle) {
   NSString *string = MLNFFIStringFromBufferView(request->resolved_url);
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-    NSURL *url = string ? [NSURL URLWithString:string] : nil;
-    NSError *error;
-    NSData *data = url ? [NSData dataWithContentsOfURL:url options:0 error:&error] : nil;
-    NSString *errorMessage;
-    mln_resource_response response = {sizeof(mln_resource_response)};
-    if (data) {
-      response.status = MLN_RESOURCE_RESPONSE_STATUS_OK;
-      response.bytes = (const uint8_t *)data.bytes;
-      response.byte_count = data.length;
-    } else {
-      errorMessage = error.localizedDescription ?: @"The file could not be read.";
-      response.status = MLN_RESOURCE_RESPONSE_STATUS_ERROR;
-      response.error_reason = MLN_RESOURCE_ERROR_REASON_OTHER;
-      response.error_message = MLNFFIBufferView(errorMessage);
-    }
-    mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
-    if (mln_resource_request_complete(handle, &response, &diagnostic) != MLN_STATUS_OK) {
-      mln_resource_request_release(handle);
-    }
-  });
+  NSURL *url = string ? [NSURL URLWithString:string] : nil;
+  if (!url) {
+    NSError *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadURL userInfo:nil];
+    MLNFFICompleteFileResourceRequest(handle, nil, error);
+    return;
+  }
+  // NSURLSession, as classic read these URLs, so errors have its wording.
+  NSURLSessionDataTask *task = [NSURLSession.sharedSession
+        dataTaskWithURL:url
+      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        MLNFFICompleteFileResourceRequest(handle, data, error);
+      }];
+  [task resume];
 }
 
 static NSString *MLNFFIConfiguredCachePath;
