@@ -106,6 +106,10 @@ const MLNExceptionName MLNInvalidStyleSourceException = @"MLNInvalidStyleSourceE
   NSString *message;
   mln_status status = [self mgl_addToMap:map message:&message];
   if (status != MLN_STATUS_OK) {
+    // The core's message, which the C API words without the identifier.
+    if ([message isEqualToString:@"source already exists"]) {
+      message = [NSString stringWithFormat:@"Source %@ already exists", self.identifier];
+    }
     [NSException raise:MLNRedundantSourceIdentifierException format:@"%@", message];
   }
   _stylable = stylable;

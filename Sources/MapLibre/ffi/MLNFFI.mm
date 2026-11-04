@@ -263,6 +263,33 @@ static void MLNFFIRuntimeEventCallback(void *userData, const mln_event_batch_vie
 
 // MARK: - Runtime
 
+static void MLNFFIFileResourceProviderCallback(void *userData,
+                                               const mln_resource_request_info *request,
+                                               mln_resource_request handle) {
+  NSString *string = MLNFFIStringFromBufferView(request->resolved_url);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSURL *url = string ? [NSURL URLWithString:string] : nil;
+    NSError *error;
+    NSData *data = url ? [NSData dataWithContentsOfURL:url options:0 error:&error] : nil;
+    NSString *errorMessage;
+    mln_resource_response response = {sizeof(mln_resource_response)};
+    if (data) {
+      response.status = MLN_RESOURCE_RESPONSE_STATUS_OK;
+      response.bytes = (const uint8_t *)data.bytes;
+      response.byte_count = data.length;
+    } else {
+      errorMessage = error.localizedDescription ?: @"The file could not be read.";
+      response.status = MLN_RESOURCE_RESPONSE_STATUS_ERROR;
+      response.error_reason = MLN_RESOURCE_ERROR_REASON_OTHER;
+      response.error_message = MLNFFIBufferView(errorMessage);
+    }
+    mln_diagnostic diagnostic = {sizeof(mln_diagnostic)};
+    if (mln_resource_request_complete(handle, &response, &diagnostic) != MLN_STATUS_OK) {
+      mln_resource_request_release(handle);
+    }
+  });
+}
+
 static NSString *MLNFFIConfiguredCachePath;
 static BOOL MLNFFICachePathConfigured;
 static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
@@ -322,6 +349,26 @@ static NSString *_Nullable (^MLNFFIDefaultCachePathProvider)(void);
         nil, &message);
     if (status != MLN_STATUS_OK) {
       MLNLogError(@"Failed to set the runtime event handler: %@", message);
+    }
+
+    // Offline downloads fetch every resource through the network loader, which
+    // in classic was NSURLSession and so also read file:// URLs. The C API's
+    // network loader refuses them, so this provider reads them instead. Map
+    // loads never reach it: they read file:// URLs from disk before the network.
+    mln_resource_route route = {sizeof(mln_resource_route)};
+    route.flags = MLN_URL_MATCH_GLOB;
+    route.url = MLNFFIBufferView(@"file://**");
+    mln_resource_provider provider = {sizeof(mln_resource_provider)};
+    provider.callback = MLNFFIFileResourceProviderCallback;
+    provider.routes = &route;
+    provider.route_count = 1;
+    status = MLNFFICallBlocking(
+        ^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+          return mln_runtime_set_resource_provider(runtime, &provider, completion, diagnostic);
+        },
+        nil, &message);
+    if (status != MLN_STATUS_OK) {
+      MLNLogError(@"Failed to set the file resource provider: %@", message);
     }
   }
   return self;
@@ -440,6 +487,30 @@ static const mln_runtime_event_flags MLNFFIDefaultSynchronousEventTypes =
   }
   mln_status status = MLNFFICallBlocking(submit, consume, message);
   [self drainEventsOfTypes:self.synchronousEventTypes];
+  return status;
+}
+
+- (mln_status)callReplacingEventsOfTypes:(mln_runtime_event_flags)types
+                                  submit:(MLNFFISubmit)submit
+                                 message:(NSString **)message {
+  __block uint64_t generation = UINT64_MAX;
+  mln_status status = MLNFFICallBlocking(
+      submit,
+      ^(const mln_completion_result *result) {
+        if (result->generation) {
+          generation = result->generation;
+        }
+      },
+      message);
+  os_unfair_lock_lock(&_eventLock);
+  NSIndexSet *stale = [_events indexesOfObjectsPassingTest:^BOOL(MLNFFIEvent *event, NSUInteger i, BOOL *stop) {
+    return event.generation < generation && (types & (1ULL << event.type));
+  }];
+  [_events removeObjectsAtIndexes:stale];
+  os_unfair_lock_unlock(&_eventLock);
+  if ([NSThread isMainThread]) {
+    [self drainEventsOfTypes:self.synchronousEventTypes];
+  }
   return status;
 }
 

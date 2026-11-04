@@ -273,6 +273,10 @@ static NSString *MLNNextPendingIdentifier(void) {
     }
   }
   if (status != MLN_STATUS_OK) {
+    // The core's message, which the C API words without the identifier.
+    if ([message isEqualToString:@"layer already exists"]) {
+      message = [NSString stringWithFormat:@"Layer %@ already exists", self.identifier];
+    }
     [NSException raise:MLNRedundantLayerIdentifierException format:@"%@", message];
   }
   [self mgl_didAttachToStyle:style];

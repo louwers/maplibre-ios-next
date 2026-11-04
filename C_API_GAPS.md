@@ -88,7 +88,28 @@ classic did, what the C API offers, and what this package does.
   can load a local style during `mln_map_set_style_url`, before those camera
   changes, so the default camera applies first and only the fields the app
   sets override it. The snapshotter sets its camera before loading the style
-  to keep classic's result; `MLNMapView` cannot reorder the app's calls.
+  to keep classic's result; `MLNMapView` cannot reorder the app's calls. For
+  the same reason, `mapView:didFinishLoadingStyle:` of a local style comes
+  before `mapViewWillStartRenderingMap:`, where classic had it after: the
+  style is loaded before the first frame is rendered.
+- **Idle during a transition** (`mapViewDidBecomeIdle:`). The core reported
+  idle only after a frame that needed no repaint while no transition ran.
+  The C API's worker renders concurrently with the main thread, so an idle
+  event raised between two animations can be delivered after the second one
+  has started (whose camera events the bridge delivers within the call). The
+  map view drops idle events while a camera change is in progress; the frames
+  after it raise another. That one can come sooner than classic's: in the
+  harness (`MLNDelegateTraceTests.testCameraChangeSequence`) it arrives within
+  0.5 s of an eased camera change's completion handler, and classic's does
+  not.
+- **A replaced style load may already have finished** (setting `styleURL` or
+  `styleJSON` while another style loads, such as right after
+  `-initWithFrame:`, which loads the default style). Classic's core cancelled
+  the earlier load, which never reported anything. The C API may have finished
+  it on its worker, from the cache, before the new load runs. The bridge drops
+  the earlier load's undelivered events (style loaded, loading finished or
+  failed, sprites, glyphs, source changes) when a new style is set, so the app
+  sees one `mapView:didFinishLoadingStyle:` as before.
 
 ### Rendering
 
@@ -460,6 +481,15 @@ classic did, what the C API offers, and what this package does.
   Each pack turns observation on; invalidating a pack leaves it on (several
   pack objects can stand for one region), and MLNOfflineStorage routes events
   only to the packs in `packs`.
+- **Downloading `file:` resources** (`MLNOfflinePack` of a region whose style
+  or tiles have `file:` URLs). Classic's offline download fetched every
+  resource through the online file source, whose NSURLSession also read
+  `file:` URLs. The C API's network loader refuses them ("native loader cannot
+  request this resource"), so such a pack stopped after the style. The shared
+  runtime registers a resource provider (`mln_runtime_set_resource_provider`)
+  for `file://**` that reads the file; map loads never reach it, since they
+  read `file:` URLs before the network. MapLibre iOS's API has no way for an
+  app to register a provider of its own, so nothing can replace this one.
 - **Response error details** (`MLNOfflinePackErrorNotification`). Classic's
   error carried the core's `Response::Error` message. The C API's event
   carries the reason and, in the event message, the text. The

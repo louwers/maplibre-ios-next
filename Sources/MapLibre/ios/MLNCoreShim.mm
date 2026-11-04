@@ -364,23 +364,47 @@ CameraOptions Map::cameraForLatLngs(const std::vector<LatLng> &latLngs, const Ed
   return cameraFromC(camera);
 }
 
+// Map::cameraForGeometry() fitted the geometry's points with
+// cameraForLatLngs(). The C API's camera_for_geometry validates the GeoJSON
+// first and refuses shapes the core took, such as an MLNPolygon's unclosed
+// ring, so the points are collected here.
+static void collectGeometryPoints(id coordinates, std::vector<LatLng> &points) {
+  if (![coordinates isKindOfClass:[NSArray class]]) {
+    return;
+  }
+  NSArray *array = coordinates;
+  if (array.count >= 2 && [array[0] isKindOfClass:[NSNumber class]]) {
+    points.emplace_back([array[1] doubleValue], [array[0] doubleValue]);
+    return;
+  }
+  for (id element in array) {
+    collectGeometryPoints(element, points);
+  }
+}
+
+static void collectGeometry(id geometry, std::vector<LatLng> &points) {
+  if (![geometry isKindOfClass:[NSDictionary class]]) {
+    return;
+  }
+  if ([geometry[@"type"] isEqual:@"GeometryCollection"]) {
+    for (id child in geometry[@"geometries"]) {
+      collectGeometry(child, points);
+    }
+    return;
+  }
+  collectGeometryPoints(geometry[@"coordinates"], points);
+}
+
 CameraOptions Map::cameraForGeometry(id geometry, const EdgeInsets &padding,
                                      const std::optional<double> &bearing,
                                      const std::optional<double> &pitch) const {
-  mln_map h = handle();
-  mln_camera_fit_options fit = fitOptions(padding, bearing, pitch);
-  NSString *json = MLNFFIJSONStringFromObject(geometry);
-  __block mln_camera_options camera = {sizeof(mln_camera_options)};
-  [map call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-    return mln_map_camera_for_geometry(h, MLNFFIBufferView(json), &fit, completion, diagnostic);
+  std::vector<LatLng> points;
+  try {
+    collectGeometry(geometry, points);
+  } catch (const std::domain_error &) {
+    return {};
   }
-      consume:^(const mln_completion_result *result) {
-        if (result->value) {
-          camera = *(const mln_camera_options *)result->value;
-        }
-      }
-      message:nil];
-  return cameraFromC(camera);
+  return cameraForLatLngs(points, padding, bearing, pitch);
 }
 
 LatLngBounds Map::latLngBoundsForCamera(const CameraOptions &camera) const {

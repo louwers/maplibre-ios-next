@@ -32,6 +32,12 @@ targets:
       - path: ../../HostApp
     dependencies:
       - package: MapLibre
+    settings:
+      base:
+        # The tests use the host's copy of MapLibre. maplibre-ios-next links
+        # statically, so keep all of it, as classic's dynamic framework does.
+        DEAD_CODE_STRIPPING: NO
+        OTHER_LDFLAGS: ["$(inherited)", "-all_load"]
     info:
       path: ParityHost-Info.plist
       properties:

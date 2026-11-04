@@ -46,13 +46,22 @@ static MLNFFISourceInfo *MLNFFISourceInfoFromC(const mln_style_source_info *info
 
 @implementation MLNFFIMap (Style)
 
+/// The events of a style load that a new load makes moot.
+static const mln_runtime_event_flags MLNFFIStyleLoadEventTypes =
+    MLN_RUNTIME_EVENT_FLAG_MAP_STYLE_LOADED | MLN_RUNTIME_EVENT_FLAG_MAP_LOADING_FINISHED |
+    MLN_RUNTIME_EVENT_FLAG_MAP_LOADING_FAILED | MLN_RUNTIME_EVENT_FLAG_MAP_SPRITE_REQUESTED |
+    MLN_RUNTIME_EVENT_FLAG_MAP_SPRITE_LOADED | MLN_RUNTIME_EVENT_FLAG_MAP_SPRITE_ERROR |
+    MLN_RUNTIME_EVENT_FLAG_MAP_GLYPHS_REQUESTED | MLN_RUNTIME_EVENT_FLAG_MAP_GLYPHS_LOADED |
+    MLN_RUNTIME_EVENT_FLAG_MAP_GLYPHS_ERROR | MLN_RUNTIME_EVENT_FLAG_MAP_SOURCE_CHANGED;
+
 - (mln_status)loadStyleURL:(NSString *)URL message:(NSString **)message {
   mln_map map = self.handle;
-  return [self call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-    return mln_map_set_style_url(map, MLNFFIBufferView(URL), completion, diagnostic);
-  }
-            consume:nil
-            message:message];
+  return [self callReplacingEventsOfTypes:MLNFFIStyleLoadEventTypes
+                                   submit:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
+                                     return mln_map_set_style_url(map, MLNFFIBufferView(URL),
+                                                                  completion, diagnostic);
+                                   }
+                                  message:message];
 }
 
 // Classic parsed a style JSON within the call and reported it loaded (or
@@ -63,11 +72,14 @@ static MLNFFISourceInfo *MLNFFISourceInfoFromC(const mln_style_source_info *info
   self.synchronousEventTypes = types | MLN_RUNTIME_EVENT_FLAG_MAP_STYLE_LOADED |
                                MLN_RUNTIME_EVENT_FLAG_MAP_LOADING_FAILED |
                                MLN_RUNTIME_EVENT_FLAG_MAP_SPRITE_REQUESTED;
-  mln_status status = [self call:^(const mln_completion *completion, mln_diagnostic *diagnostic) {
-    return mln_map_set_style_json(map, MLNFFIBufferView(JSON), completion, diagnostic);
-  }
-                         consume:nil
-                         message:message];
+  mln_status status = [self callReplacingEventsOfTypes:MLNFFIStyleLoadEventTypes
+                                                submit:^(const mln_completion *completion,
+                                                         mln_diagnostic *diagnostic) {
+                                                  return mln_map_set_style_json(
+                                                      map, MLNFFIBufferView(JSON), completion,
+                                                      diagnostic);
+                                                }
+                                               message:message];
   self.synchronousEventTypes = types;
   return status;
 }

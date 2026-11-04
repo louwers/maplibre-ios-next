@@ -733,7 +733,17 @@ const MLNExceptionName MLNRedundantSourceIdentifierException =
 // MARK: Style light
 
 - (void)setLight:(MLNLight *)light {
-  [self.mgl_map setStyleLightJSON:[light mgl_lightJSON] message:nil];
+  // Classic converted each property when it built the core light and raised
+  // for an invalid value; the C API validates the light as a whole.
+  NSString *message;
+  if ([self.mgl_map setStyleLightJSON:[light mgl_lightJSON] message:&message] != MLN_STATUS_OK) {
+    for (NSString *prefix in @[ @"style light: ", @"light property: ", @"light: " ]) {
+      if ([message hasPrefix:prefix]) {
+        message = [message substringFromIndex:prefix.length];
+      }
+    }
+    [NSException raise:NSInvalidArgumentException format:@"Invalid property value: %@", message];
+  }
 }
 
 - (MLNLight *)light {

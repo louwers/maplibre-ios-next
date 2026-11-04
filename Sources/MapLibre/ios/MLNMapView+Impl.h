@@ -65,6 +65,7 @@ class MLNMapViewImpl {
   bool frameOutstanding = false;
   bool forceNextFrame = false;
   bool lastFrameNeedsRepaint = false;
+  bool cameraChanging = false;
   bool rendering = false;
   bool tileCacheEnabled = true;
   bool opaque = false;

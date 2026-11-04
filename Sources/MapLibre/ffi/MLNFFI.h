@@ -161,6 +161,17 @@ FOUNDATION_EXTERN NSString *MLNFFIStatusDescription(mln_status status);
 /// Delivers queued events now. Main thread only.
 - (void)drainEvents;
 
+/**
+ Blocks until the call completes, like `-call:consume:message:`, but first
+ discards the queued events of the given types that the map published before
+ the call took effect. Loading a style uses it to drop the undelivered events
+ of the load it replaces: classic's core cancelled that load before it could
+ report anything, while the C API may have finished it on its worker.
+ */
+- (mln_status)callReplacingEventsOfTypes:(mln_runtime_event_flags)types
+                                  submit:(MLNFFISubmit)submit
+                                 message:(NSString *_Nullable *_Nullable)message;
+
 /// The event types that a blocking call on the main thread delivers before it
 /// returns: those classic's core raised within the call (camera changes, the
 /// start of a style load). Other events wait for the next turn of the main

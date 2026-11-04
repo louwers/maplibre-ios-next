@@ -117,6 +117,18 @@ static id MLNPositionJSON(id object) {
   return object;
 }
 
+/// mln::Color::stringify(): the CSS rgba() form of a color.
+static NSString *MLNCSSStringFromColor(MLNColor *color) {
+  MLNColorComponents premultiplied = color.mgl_color;
+  if (premultiplied.a == 0) {
+    return @"rgba(0,0,0,0)";
+  }
+  return [NSString stringWithFormat:@"rgba(%.17g,%.17g,%.17g,%.17g)",
+                                    premultiplied.r / premultiplied.a * 255,
+                                    premultiplied.g / premultiplied.a * 255,
+                                    premultiplied.b / premultiplied.a * 255, premultiplied.a];
+}
+
 // A constant of the property's type as JSON, as getMBGLValue() converted it.
 static id MLNConstantJSON(id value, const MLNStylePropertyDescriptor *descriptor) {
   value = MLNUnwrapConstant(value);
@@ -149,7 +161,7 @@ static id MLNConstantJSON(id value, const MLNStylePropertyDescriptor *descriptor
       if (![value isKindOfClass:[NSArray class]]) {
         // A single value where the spec allows it, e.g. a number for numberArray.
         if (descriptor->type == MLNStyleValueTypeColorArray && [value isKindOfClass:[MLNColor class]]) {
-          return MLNStyleJSONFromColor(value);
+          return MLNCSSStringFromColor(value);
         }
         return [value isKindOfClass:[NSNumber class]] ? @([(NSNumber *)value floatValue]) : value;
       }
@@ -161,7 +173,9 @@ static id MLNConstantJSON(id value, const MLNStylePropertyDescriptor *descriptor
             [array addObject:@([constant floatValue])];
             break;
           case MLNStyleValueTypeColorArray:
-            [array addObject:[constant isKindOfClass:[MLNColor class]] ? MLNStyleJSONFromColor(constant)
+            // The core reads color arrays as CSS color strings, as
+            // getMBGLValue() wrote them through Color::stringify().
+            [array addObject:[constant isKindOfClass:[MLNColor class]] ? MLNCSSStringFromColor(constant)
                                                                        : constant];
             break;
           case MLNStyleValueTypeEnumArray:

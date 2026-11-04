@@ -234,12 +234,14 @@ void MLNMapViewImpl::handleEvent(MLNFFIEvent *event) {
   }
   switch (event.type) {
     case MLN_RUNTIME_EVENT_MAP_CAMERA_WILL_CHANGE:
+      cameraChanging = true;
       [view cameraWillChangeAnimated:event.code == MLN_CAMERA_CHANGE_MODE_ANIMATED];
       break;
     case MLN_RUNTIME_EVENT_MAP_CAMERA_IS_CHANGING:
       [view cameraIsChanging];
       break;
     case MLN_RUNTIME_EVENT_MAP_CAMERA_DID_CHANGE:
+      cameraChanging = false;
       [view cameraDidChangeAnimated:event.code == MLN_CAMERA_CHANGE_MODE_ANIMATED];
       break;
     case MLN_RUNTIME_EVENT_MAP_LOADING_STARTED:
@@ -318,7 +320,13 @@ void MLNMapViewImpl::handleEvent(MLNFFIEvent *event) {
       break;
     }
     case MLN_RUNTIME_EVENT_MAP_IDLE:
-      [view mapViewDidBecomeIdle];
+      // The core never became idle during a transition. Camera changes are
+      // delivered within the call that starts them, ahead of an idle event the
+      // worker raised before it, which is stale by then; the frames after the
+      // change raise another.
+      if (!cameraChanging) {
+        [view mapViewDidBecomeIdle];
+      }
       break;
     case MLN_RUNTIME_EVENT_MAP_STYLE_IMAGE_MISSING:
       [view didFailToLoadImage:event.message];
