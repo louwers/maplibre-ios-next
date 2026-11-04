@@ -218,6 +218,11 @@ class EdgeInsets {
   double _right = 0;
 };
 
+/// Padding for a C API camera: the core took negative padding, the C API takes
+/// none, so a negative inset moves onto the opposite side, which keeps the
+/// center of the padded area.
+mln_edge_insets cameraPadding(const EdgeInsets &insets);
+
 struct CameraOptions {
   CameraOptions &withCenter(const std::optional<LatLng> &o) { center = o; return *this; }
   CameraOptions &withPadding(const std::optional<EdgeInsets> &p) { padding = p; return *this; }

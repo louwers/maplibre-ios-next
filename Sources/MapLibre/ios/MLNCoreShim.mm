@@ -67,7 +67,7 @@ mln_camera_options cameraToC(const CameraOptions &camera) {
   }
   if (camera.padding) {
     options.fields |= MLN_CAMERA_OPTION_PADDING;
-    options.padding = toC(*camera.padding);
+    options.padding = cameraPadding(*camera.padding);
   }
   if (camera.anchor) {
     options.fields |= MLN_CAMERA_OPTION_ANCHOR;
@@ -144,7 +144,7 @@ mln_camera_fit_options fitOptions(const EdgeInsets &padding, const std::optional
                                   const std::optional<double> &pitch) {
   mln_camera_fit_options options = {sizeof(mln_camera_fit_options)};
   options.fields = MLN_CAMERA_FIT_OPTION_PADDING;
-  options.padding = toC(padding);
+  options.padding = cameraPadding(padding);
   if (bearing) {
     options.fields |= MLN_CAMERA_FIT_OPTION_BEARING;
     options.bearing = *bearing;
@@ -157,6 +157,30 @@ mln_camera_fit_options fitOptions(const EdgeInsets &padding, const std::optional
 }
 
 }  // namespace
+
+// MLNMapView pads with negative insets to place the user location while it
+// follows it.
+mln_edge_insets cameraPadding(const EdgeInsets &insets) {
+  mln_edge_insets padding = {insets.top(), insets.left(), insets.bottom(), insets.right()};
+  if (padding.top < 0) {
+    padding.bottom -= padding.top;
+    padding.top = 0;
+  }
+  if (padding.bottom < 0) {
+    padding.top -= padding.bottom;
+    padding.bottom = 0;
+  }
+  if (padding.left < 0) {
+    padding.right -= padding.left;
+    padding.left = 0;
+  }
+  if (padding.right < 0) {
+    padding.left -= padding.right;
+    padding.right = 0;
+  }
+  return padding;
+}
+
 
 Map::Map(MLNFFIMap *map_) : map(map_), annotationImages([NSMutableDictionary dictionary]) {}
 

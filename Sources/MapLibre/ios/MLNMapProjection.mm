@@ -76,7 +76,7 @@
     cameraOptions.center = MLNLatLngFromLocationCoordinate2D(camera.centerCoordinate);
   }
   cameraOptions.fields |= MLN_CAMERA_OPTION_PADDING | MLN_CAMERA_OPTION_ZOOM | MLN_CAMERA_OPTION_ROLL;
-  cameraOptions.padding = MLNEdgeInsetsFromNSEdgeInsets(insets);
+  cameraOptions.padding = mln::cameraPadding(MLNEdgeInsetsFromNSEdgeInsets(insets));
   cameraOptions.zoom = MLNZoomLevelForAltitude(camera.altitude, camera.pitch,
                                                camera.centerCoordinate.latitude, self.mapFrameSize);
   if (camera.heading >= 0) {
@@ -109,7 +109,7 @@
   mln_camera_options current = [self mgl_camera];
   mln_camera_fit_options fit = {sizeof(mln_camera_fit_options)};
   fit.fields = MLN_CAMERA_FIT_OPTION_PADDING | MLN_CAMERA_FIT_OPTION_BEARING | MLN_CAMERA_FIT_OPTION_PITCH;
-  fit.padding = MLNEdgeInsetsFromNSEdgeInsets(insets);
+  fit.padding = mln::cameraPadding(MLNEdgeInsetsFromNSEdgeInsets(insets));
   fit.bearing = current.bearing;
   fit.pitch = current.pitch;
   mln_map handle = _map.handle;
