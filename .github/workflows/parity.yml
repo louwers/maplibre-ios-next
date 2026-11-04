@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   parity:
     runs-on: macos-26
@@ -42,4 +46,24 @@ jobs:
             Parity/out/*/coverage.json
             Parity/out/*/traces
             Parity/out/*/build-errors.txt
+            Parity/out/*/build.log
             Parity/out/render-diff
+      # The harness reports a part that did not run instead of failing, so
+      # check that both implementations built and ran every part. Test
+      # failures are expected: some upstream tests fail against classic too.
+      - name: Both implementations ran
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          ok = True
+          for impl in ("classic", "next"):
+              status = json.load(open(f"Parity/out/{impl}/status.json"))
+              for part, expected in (("build", {"ok"}),
+                                     ("behaviour", {"ok", "finished-with-failures"}),
+                                     ("render", {"ok"})):
+                  state = status.get(part, {}).get("state")
+                  if state not in expected:
+                      print(f"::error::{impl} {part}: {state}: {status[part].get('message', '')}")
+                      ok = False
+          sys.exit(0 if ok else 1)
+          PY
